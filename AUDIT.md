@@ -132,14 +132,14 @@ and each duplicates its own "normal" vs "state" (QFI) version of the same gate s
 Adding a third circuit means editing this class in four places (both circuit + both state-circuit
 variants) and extending the string switch.
 
-Recommended shape:
+Recommended shape (VQC only for now — QCNN is explicitly out of scope for this pass, see
+`REFACTOR.md`; re-add it as its own deliverable once it's actually needed again):
 
 ```
 quantum/circuits/
     base.py        # Circuit protocol: encode(inputs) -> None, ansatz(weights) -> None,
                     #                   n_weights(n_qubits, n_layers) -> int
     vqc.py          # today's _vqc_circuit, as a class implementing the protocol
-    qcnn.py         # today's _qcnn_implementation, same protocol
     registry.py     # name -> class lookup, replaces the if/else in set_circuit
 ```
 
@@ -157,8 +157,10 @@ quantum/circuits/
 - `set_circuit(circuit_type=...)` becomes `set_circuit(circuit_type=...)` → `registry.get(circuit_type)`,
   no code change needed to add an entry.
 
-This is a moderate refactor (the two existing circuits move into the new files near verbatim); it
-does not require touching `QuantumTrainer`, `losses.py`, or `case_reader.py`.
+This is a moderate refactor (VQC moves into the new file near verbatim); it does not require
+touching `QuantumTrainer`, `losses.py`, or `case_reader.py`. QCNN (`_qcnn_implementation` /
+`_qcnn_state_circuit`) is dropped in this pass, along with `circuit_type='CNN'` support, per current
+instruction — not merely deferred from migration but removed from the live code.
 
 ### 3.3 General cleanup / portability
 
