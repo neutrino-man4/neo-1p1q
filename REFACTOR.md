@@ -25,94 +25,163 @@ Diffing the two existing circuits operation-by-operation:
 |---|---|---|
 | **encode** | re-run every layer, full wire set, offset into `inputs` by `w + L*N` | run once, before any layers, offset by `w` only |
 | **entangle** | fixed ring `CNOT` over all N wires, identical every layer | one initial ring of `CY`, then folded into the per-layer loop below |
-| **rotate** | separate loop over all wires, after entangle, using `weights[3*L*N : 3*L*N+3*N]` sliced into rz/ry/rx | fused with entangle: per surviving wire-pair, `RZ`/`RY` on both members then one `CNOT`, using `weights[2*L]`, `weights[2*L+1]` |
+| **rotate** | separate loop over all wires, after entangle, one weight triplet (RZ/RY/RX) per wire | fused with entangle: per surviving wire-pair, `RZ`/`RY` on both members then one `CNOT`, one shared (phi, theta) pair per layer |
 | **wires touched per layer** | all `N` wires, every layer | shrinking set `auto_wires[:-(1+L)]` — one fewer wire each layer (pooling) |
 | **measure** | one scalar: `expval` of a weighted `Hamiltonian` over all wires | a list: `expval(PauliZ(i))` per wire |
 
 QCNN's rotate and entangle are not sequential per-layer steps over a fixed wire set — they're
-interleaved per shrinking wire-pair, and its encoding isn't per-layer at all. A single master loop
-that hardcodes "for each layer: encode, then entangle, then rotate" cannot express QCNN's pooling
-topology without one of the four operations becoming a dumping ground for logic that belongs to a
-different step. So:
+interleaved per shrinking wire-pair, and its encoding isn't per-layer at all. So:
 
 - The four operations (`encode`, `entangle`, `rotate`, `measure`) are the right *unit* of reuse.
 - The **composition** of those four — the loop shape — is not; it must stay overridable per
   circuit, with a default implementation covering the common case (repeat encode → entangle →
-  rotate every layer over a fixed wire set, measure once) so that circuits shaped like VQC don't
-  have to write any loop at all.
+  rotate every layer over a fixed wire set, measure once).
 
-## 3. The `Circuit` protocol
+## 3. Weight representation: rotation tensor + named aux weights
+
+Today's flat weight vector mixes two unrelated things and accesses both via magic negative
+indices: per-qubit trainable rotation angles (`weights[start:start+3*N:3]`-style slicing) and a
+handful of *auxiliary* scalars (scale factor, loss bias, Hamiltonian coefficients) stuffed into the
+tail (`weights[-1]`, `weights[-2]`, `weights[-6:-1]`, `weights[-11:-1]` — inconsistent between
+circuits, and `losses.py` independently hardcodes one of these slices). This refactor replaces both
+with two explicit, named pieces:
+
+**Rotation tensor** — shape declared as a tuple `(L, N, R)`:
+- `L` — number of layers
+- `N` — qubits addressed *independently* per layer (a circuit whose per-layer rotation is shared
+  across all active wires, like QCNN, declares `N = 1` — one broadcast parameter set, not one bug)
+- `R` — trainable rotation ops per qubit per layer
+
+```python
+@dataclass(frozen=True)
+class RotationShape:
+    L: int
+    N: int
+    R: int
+
+    def validate(self, layer: int, wires: list[int]) -> None:
+        if layer >= self.L:
+            raise ValueError(f"layer {layer} exceeds declared L={self.L}")
+        if self.N > 1 and len(wires) > self.N:
+            raise ValueError(f"{len(wires)} wires requested, declared N={self.N}")
+```
+
+`rotate()` indexes into the tensor directly (`weights.rot[layer, :, op]`) instead of computing flat
+offsets by hand; an op index `>= R` is a plain out-of-bounds error from that array access — no
+separate check needed. `validate()` is called once per layer inside `build()` (see section 4), so a
+config that requests more layers or wires than the circuit was sized for fails immediately with a
+named reason instead of a shape-mismatch deep inside PennyLane.
+
+**Named aux weights** — declared per circuit as `aux_defaults: dict[str, float]`, each entry's
+*initial value* overridable from Hydra config:
+
+```yaml
+# hydra_configs/VQC/base.yaml
+aux_weights:
+  scale_factor: 1.0
+  bias: 0.1
+```
+
+`train.py` merges `{**circuit.aux_defaults, **cfg.get('aux_weights', {})}` — no more flat-vector
+slicing, no more the two circuits disagreeing on offsets (`-1` vs `-2`) purely because their
+neighboring slices claimed different amounts of trailing space; both now just say
+`weights.aux['scale_factor']`.
+
+`hamiltonian_coeffs` (VQC's Hamiltonian, today's fixed `weights[-11:-1]`, 10 coefficients
+regardless of qubit count) is the one aux entry whose correct length depends on a runtime value
+(qubit count), so it isn't given a static class-level default. Instead `VQCCircuit.measure()`
+checks it explicitly: use `cfg.aux_weights.hamiltonian_coeffs` if present (validating
+`len(...) == len(wires)`, raising otherwise), else default to `[0.1] * len(wires)`. This is the
+same historical fixed-10-vs-N-qubits question flagged during the earlier audit discussion, now
+resolved as a named, length-checked config entry instead of a silent shape mismatch — confirmed via
+the run archive that every past run using this Hamiltonian measurement used exactly 10 qubits, so
+this changes no existing run's behavior, only what happens at other qubit counts (a clear error
+instead of a confusing one).
+
+Also noticed while migrating (unrelated to weights): `QuantumClassifier.__init__` /
+`_initialize_wires` sets `use_ancilla`, `truth_wire`, `separate_ancilla`, none of which are read by
+either circuit — likely vestigial from an earlier ancilla-based measurement scheme. Decide during
+migration whether to carry them into the new protocol or drop them; don't carry them forward
+silently unused a second time.
+
+**Open risk, needs checking before implementation, not just design:** `QuantumTrainer` currently
+calls `qml.AdamOptimizer.step_and_cost(cost_fn, weights)` on one flat trainable array. Splitting
+weights into `rot` (an array) plus `aux` (named scalars) means the optimizer call must track
+several trainable objects, e.g. `opt.step_and_cost(cost_fn, rot, *aux.values())`, then repack into
+the `CircuitWeights` used by the next iteration — and checkpoint save/load (currently a flat-array
+pickle) must serialize the same structure. This touches `QuantumTrainer`, not just
+`quantum/circuits/`; confirm PennyLane's optimizer supports multiple trainable args cleanly before
+committing to this shape in `architectures.py`.
+
+## 4. The `Circuit` protocol
 
 ```python
 # quantum/circuits/base.py
-from typing import Protocol, List
+from dataclasses import dataclass
+from typing import Protocol, List, Dict, Any
 import pennylane as qml
 import pennylane.numpy as np
 
+@dataclass
+class CircuitWeights:
+    rot: np.ndarray          # shape (L, N, R) -- see section 3
+    aux: Dict[str, Any]      # name -> value, from circuit.aux_defaults merged with cfg.aux_weights
+
 class Circuit(Protocol):
-    """
-    Contract every circuit implementation must satisfy. `build()` has a usable
-    default (see CircuitBase) for the common "repeat every layer, measure once"
-    shape; override it only when the loop structure itself differs, not the
-    gates inside it.
-    """
-
     num_layers: int
+    aux_defaults: Dict[str, float]
 
-    def n_weights(self, n_qubits: int, n_layers: int) -> int:
-        """Total trainable weights this circuit needs, EXCLUDING auxiliary
-        weights (bias, scale-factor, loss-side coefficients -- see section 6).
-        Must be the single source of truth: train.py calls this instead of
-        computing a weight count inline."""
+    def rotation_shape(self, n_qubits: int, n_layers: int) -> "RotationShape": ...
+
+    def encode(self, weights: CircuitWeights, inputs: np.ndarray, layer: int, wires: List[int]) -> None:
+        """State preparation from data. Takes `weights` so a circuit can read
+        a named aux value (e.g. scale_factor) without any weights-free vs
+        weights-taking ambiguity."""
         ...
 
-    def encode(self, inputs: np.ndarray, layer: int, wires: List[int]) -> None:
-        """State preparation from data. Called however many times build()
-        decides to call it -- once, or once per layer."""
-        ...
+    def entangle(self, wires: List[int]) -> None: ...
 
-    def entangle(self, wires: List[int]) -> None:
-        """Fixed (non-parameterized) entangling gates over the given wires."""
-        ...
+    def rotate(self, weights: CircuitWeights, layer: int, wires: List[int]) -> None: ...
 
-    def rotate(self, weights: np.ndarray, layer: int, wires: List[int]) -> None:
-        """Trainable single-qubit rotations for this layer's active wires."""
-        ...
-
-    def measure(self, weights: np.ndarray, wires: List[int]):
+    def measure(self, weights: CircuitWeights, wires: List[int]):
         """Terminal measurement. Return an expval (scalar or Hamiltonian) or a
-        list of expvals -- whatever the loss function this circuit pairs with
-        expects."""
+        list of expvals."""
         ...
 
-    def build(self, weights: np.ndarray, inputs: np.ndarray, wires: List[int]):
+    def build(self, weights: CircuitWeights, inputs: np.ndarray, wires: List[int]):
         """Full circuit body; QNode is built directly from this method.
         Default composition below; override for a different loop shape."""
+        shape = self.rotation_shape(len(wires), self.num_layers)
         for L in range(self.num_layers):
-            self.encode(inputs, layer=L, wires=wires)
+            shape.validate(L, wires)
+            self.encode(weights, inputs, layer=L, wires=wires)
             self.entangle(wires)
             self.rotate(weights, layer=L, wires=wires)
         return self.measure(weights, wires)
 ```
 
 `CircuitBase` is a concrete class implementing just `build()` as above, so a new "standard" circuit
-subclasses it and only has to write `n_weights`, `encode`, `entangle`, `rotate`, `measure` — five
-short methods, no loop. QCNN subclasses `Circuit` directly (or `CircuitBase` and overrides `build`)
+subclasses it and only has to write `rotation_shape`, `aux_defaults`, `encode`, `entangle`,
+`rotate`, `measure`. QCNN subclasses `Circuit` directly (or `CircuitBase` and overrides `build`)
 because its loop shape differs.
 
-## 4. VQC migrated (fits the default `build()` unchanged)
+## 5. VQC migrated
 
 ```python
 # quantum/circuits/vqc.py
 import pennylane as qml
 import pennylane.numpy as np
-from .base import CircuitBase
+from .base import CircuitBase, RotationShape, CircuitWeights
 from helpers.utils import getIndex
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 class VQCCircuit(CircuitBase):
+    aux_defaults = {'scale_factor': 1.0, 'bias': 0.1}
+    # 'hamiltonian_coeffs' has no static default -- its length depends on
+    # qubit count, resolved in measure() below.
+
     def __init__(self, num_layers: int):
         self.num_layers = num_layers
         self.index = {
@@ -121,12 +190,12 @@ class VQCCircuit(CircuitBase):
             'pt':  getIndex('particle', 'pt'),
         }
 
-    def n_weights(self, n_qubits: int, n_layers: int) -> int:
-        return 3 * n_qubits * n_layers
+    def rotation_shape(self, n_qubits, n_layers):
+        return RotationShape(L=n_layers, N=n_qubits, R=3)   # per wire per layer: RZ, RY, RX
 
-    def encode(self, inputs, layer, wires):
+    def encode(self, weights, inputs, layer, wires):
         N = len(wires)
-        sf = 2 * np.pi * sigmoid(self._weights[-1]) + 1   # see section 6: aux slot
+        sf = 2 * np.pi * sigmoid(weights.aux['scale_factor']) + 1
         for w in wires:
             zenith  = np.squeeze(inputs[:, w + layer * N, self.index['eta']])
             azimuth = np.squeeze(inputs[:, w + layer * N, self.index['phi']])
@@ -142,47 +211,42 @@ class VQCCircuit(CircuitBase):
             qml.CNOT(wires=[w, (w + 1) % N])
 
     def rotate(self, weights, layer, wires):
-        N = len(wires)
-        start = 3 * layer * N
-        rot_z = weights[start + 0 : start + 3 * N : 3]
-        rot_y = weights[start + 1 : start + 3 * N : 3]
-        rot_x = weights[start + 2 : start + 3 * N : 3]
+        rot_z = weights.rot[layer, :, 0]
+        rot_y = weights.rot[layer, :, 1]
+        rot_x = weights.rot[layer, :, 2]
         for rz, ry, rx, w in zip(rot_z, rot_y, rot_x, wires):
             qml.Rot(0., ry, rz, wires=w)
             qml.RX(rx, wires=w)
 
     def measure(self, weights, wires):
         obs = [qml.PauliZ(i) for i in wires]
-        coeffs = weights[-11:-1]          # see section 6: aux slot, size mismatch flagged
+        coeffs = weights.aux.get('hamiltonian_coeffs', [0.1] * len(wires))
+        if len(coeffs) != len(wires):
+            raise ValueError(
+                f"hamiltonian_coeffs has {len(coeffs)} entries, circuit has {len(wires)} wires"
+            )
         return qml.expval(qml.Hamiltonian(coeffs, obs))
 ```
 
-`self._weights` in `encode` above is a small wrinkle: the current `_vqc_circuit` reads the
-scale-factor out of `weights[-1]` inside the per-layer loop, meaning `encode` needs the full
-weight vector even though its declared signature (per the protocol) doesn't take one. Two ways to
-resolve this cleanly during migration, pick one:
+`weights.aux['bias']` (today's `sum(weights[-6:-1])` in `losses.py`) is read at the loss-function
+call site, not inside the circuit — same as today, just a named lookup instead of a slice; updating
+that call site is a required knock-on change (see section 8), not part of `quantum/circuits/`.
 
-- **(a)** widen `encode`'s signature to `encode(self, weights, inputs, layer, wires)` — the
-  protocol takes `weights` in every method, some circuits just ignore it; or
-- **(b)** keep `encode` weight-free and have `build()` compute `sf` once and pass it down (cleaner,
-  and matches the fact that `sf` is a per-circuit-invocation constant, not something `encode`
-  should recompute per wire). Recommended: **(b)**, requires overriding `build()` in `VQCCircuit`
-  to precompute `sf` and thread it through — a two-line override, not a sign the loop shape itself
-  differs.
-
-## 5. QCNN migrated (owns `build()` — the loop shape genuinely differs)
+## 6. QCNN migrated (owns `build()` — the loop shape genuinely differs)
 
 ```python
 # quantum/circuits/qcnn.py
 import pennylane as qml
 import pennylane.numpy as np
-from .base import Circuit
+from .base import Circuit, RotationShape
 from helpers.utils import getIndex
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 class QCNNCircuit(Circuit):
+    aux_defaults = {'scale_factor': 1.0}
+
     def __init__(self, num_layers: int):
         self.num_layers = num_layers
         self.index = {
@@ -191,11 +255,11 @@ class QCNNCircuit(Circuit):
             'pt':  getIndex('particle', 'pt'),
         }
 
-    def n_weights(self, n_qubits: int, n_layers: int) -> int:
-        return 2 * n_layers
+    def rotation_shape(self, n_qubits, n_layers):
+        return RotationShape(L=n_layers, N=1, R=2)   # (phi, theta) shared across active wires
 
-    def encode(self, inputs, layer, wires):
-        sf = 2 * np.pi * sigmoid(self._weights[-2]) + 1   # note: -2, not -1 -- see section 6
+    def encode(self, weights, inputs, layer, wires):
+        sf = 2 * np.pi * sigmoid(weights.aux['scale_factor']) + 1
         for w in wires:
             zenith  = np.squeeze(inputs[:, w, self.index['eta']])
             azimuth = np.squeeze(inputs[:, w, self.index['phi']])
@@ -213,7 +277,7 @@ class QCNNCircuit(Circuit):
     def rotate(self, weights, layer, wires):
         # "wires" here is the pooled/active set for this layer -- see build() below
         N = len(wires) + layer + 1   # original modulus base before pooling
-        phi, theta = weights[2 * layer], weights[2 * layer + 1]
+        phi, theta = weights.rot[layer, 0, 0], weights.rot[layer, 0, 1]
         for w in wires:
             qml.RZ(phi, wires=w)
             qml.RY(theta, wires=w)
@@ -225,69 +289,35 @@ class QCNNCircuit(Circuit):
         return [qml.expval(qml.PauliZ(i)) for i in wires]
 
     def build(self, weights, inputs, wires):
-        self._weights = weights   # see section 6
-        self.encode(inputs, layer=0, wires=wires)   # once, not per layer
-        self.entangle(wires)                          # initial ring only
+        shape = self.rotation_shape(len(wires), self.num_layers)
+        self.encode(weights, inputs, layer=0, wires=wires)   # once, not per layer
+        self.entangle(wires)                                 # initial ring only
         active = list(wires)
         for L in range(self.num_layers):
-            active = active[:-(1 + L)]                 # pooling: one fewer wire per layer
+            shape.validate(L, active)
+            active = active[:-(1 + L)]                       # pooling: one fewer wire per layer
             self.rotate(weights, layer=L, wires=active)
-        return self.measure(weights, wires)            # measured over ALL original wires
+        return self.measure(weights, wires)                  # measured over ALL original wires
 ```
-
-## 6. Weight-layout convention (uncovered while migrating, needs a decision)
-
-The current code encodes several *auxiliary* meanings into trailing slices of the flat weight
-vector, and the convention is not consistent between the two circuits:
-
-| Purpose | VQC | QCNN |
-|---|---|---|
-| Scale factor (`sf`) fed into `encode` | `weights[-1]` | `weights[-2]` |
-| Bias added to score, in `losses.VQC_cost` | `sum(weights[-6:-1])` | same call site, same slice — applies regardless of circuit |
-| Hamiltonian coefficients, in `measure` | `weights[-11:-1]` (10 fixed coefficients, independent of `n_qubits`) | n/a — QCNN measures per-wire, no Hamiltonian |
-| `cfg.extra_weights` | appended after the circuit's own `n_weights()`, initialized to `0.1` except the last one | same mechanism, same `train.py` code path |
-
-Two things worth resolving as part of this refactor, not after it:
-
-1. **`weights[-11:-1]` is a fixed-size slice (10 coefficients) regardless of `n_qubits`.** Since
-   `measure()` builds one `PauliZ` observable per wire in `wires`, this only lines up when
-   `len(wires) == 10`. Worth confirming whether this is intentional (Hamiltonian only ever
-   evaluated on a fixed 10-wire subset) or a latent bug that happens not to have been hit outside
-   10-qubit configs. Flagging rather than "fixing" here since it changes model behavior.
-2. **`sf` lives at a different offset per circuit** (`-1` vs `-2`) purely because `VQC_cost`'s bias
-   slice (`-6:-1`) and `measure`'s Hamiltonian slice (`-11:-1`) claim different amounts of trailing
-   space. Once circuits are split into their own files, give this a name instead of a magic
-   negative index — e.g. each circuit declares `aux_weights: dict[str, slice]` (`{'scale_factor':
-   slice(-1, None), ...}`) so `encode`/`measure` and `train.py`'s `NUM_WEIGHTS` computation read
-   the same declared layout instead of independently-maintained magic numbers.
-
-Also noticed in `QuantumClassifier.__init__` / `_initialize_wires`: `use_ancilla`, `truth_wire`,
-and `separate_ancilla` are all initialized but never referenced inside either `_vqc_circuit` or
-`_qcnn_implementation`. Likely vestigial from an earlier ancilla-based measurement scheme. Decide
-during migration whether to carry them into the new `Circuit` protocol (if a future circuit needs
-an ancilla) or drop them (if not) — don't carry them forward silently unused a second time.
 
 ## 7. State-circuit derivation for QFI (replacing the hand-duplicated `_vqc_state_circuit` twin)
 
 `quantum_fisher()` / `run_fisher_computation()` need a version of the circuit that returns
 `qml.state()` instead of `measure()`'s expval. Today this is a hand-copied second method per
-circuit (`_vqc_state_circuit` duplicates `_vqc_circuit` gate-for-gate). Since `build()` always ends
-by calling `self.measure(...)`, the state version can be derived generically instead:
+circuit. Since `build()` always ends by calling `self.measure(...)`, the state version is derived
+generically instead — give `Circuit.build` an optional `measure_override: Callable | None = None`
+parameter, called instead of `self.measure(...)` at the end when set:
 
 ```python
-# quantum/architectures.py (QuantumClassifier), replacing the two hand-written *_state_circuit methods
-def _state_build(self, weights, inputs, wires):
-    with unittest.mock.patch.object(type(self._impl), 'measure', lambda self, w, wires: qml.state()):
-        return self._impl.build(weights, inputs, wires)
+# quantum/architectures.py (QuantumClassifier)
+def _state_build(self, weights: CircuitWeights, inputs, wires):
+    return self._impl.build(weights, inputs, wires, measure_override=lambda *_: qml.state())
 ```
 
-(Or, more in the spirit of the codebase's existing style than `unittest.mock`: give `Circuit.build`
-an optional `measure_override: Callable | None = None` parameter that, when set, is called instead
-of `self.measure(...)` at the end — same effect, no monkeypatching.) Either way, **one** circuit
-implementation now produces both the expval and state versions; a new circuit gets QFI support for
-free as long as its `build()` calls `self.measure(...)` exactly once, at the end.
+One circuit implementation now produces both the expval and state versions; a new circuit gets QFI
+support for free as long as its `build()` calls `self.measure(...)` exactly once, at the end.
 
-Note from section 6: `set_circuit()` currently wraps only the VQC state circuit in
+Note from section 3: `set_circuit()` currently wraps only the VQC state circuit in
 `qml.defer_measurements(...)`, not the QCNN one — worth checking whether that's load-bearing
 (neither circuit appears to use mid-circuit measurement today) before deciding whether the generic
 wrapper needs it too.
@@ -311,8 +341,7 @@ def get(circuit_type: str, num_layers: int):
         raise ValueError(f"Unknown circuit_type '{circuit_type}'. Registered: {list(_REGISTRY)}")
 ```
 
-`QuantumClassifier.set_circuit()` collapses from ~30 lines of `if circuit_type == 'CNN': ... else:
-...` duplicating the QNode-construction call, to:
+`QuantumClassifier.set_circuit()` collapses to:
 
 ```python
 def set_circuit(self, circuit_type: str = 'normal') -> None:
@@ -321,35 +350,46 @@ def set_circuit(self, circuit_type: str = 'normal') -> None:
     self.state_circuit_qnode = qml.QNode(self._state_build, self.device, interface=self.backend)
 ```
 
-`train.py`'s `NUM_WEIGHTS` computation (currently lines 115-117, branching on `cfg.circuit_type`
-itself) becomes:
+`train.py`'s weight construction (currently `NUM_WEIGHTS = ... + cfg.extra_weights`, a flat
+`np.random.uniform` array with `init_weights[-cfg.extra_weights:-1] = 0.1`) becomes:
 
 ```python
-NUM_WEIGHTS = VQC._impl.n_weights(len(VQC.auto_wires), cfg.num_layers) + cfg.extra_weights
+shape = VQC._impl.rotation_shape(len(VQC.auto_wires), cfg.num_layers)
+rot = np.random.uniform(0, np.pi, size=(shape.L, shape.N, shape.R))
+aux = {**VQC._impl.aux_defaults, **dict(cfg.get('aux_weights', {}))}
+init_weights = CircuitWeights(rot=rot, aux=aux)
 ```
 
-— one call, no duplicated `if circuit_type == 'CNN'` branch to keep in sync with the one inside
-`architectures.py`.
+`cfg.extra_weights` and its associated `train.py:109-121` branch are dropped entirely — every aux
+weight is now declared by name (in the circuit's `aux_defaults` and/or Hydra config), so there's no
+count to reconcile.
+
+`losses.py`'s `VQC_cost`/`probabilistic_loss` call sites read `weights.aux['bias']` instead of
+`sum(weights[-6:-1])` — a required signature change in `losses.py`, out of `quantum/circuits/`'s
+own scope but a direct consequence of removing the flat vector.
 
 ## 9. Migration plan (incremental, non-breaking)
 
-1. Add `quantum/circuits/base.py` (`Circuit` protocol + `CircuitBase` default `build()`). No
-   existing code changes yet.
-2. Add `quantum/circuits/vqc.py` and `quantum/circuits/qcnn.py` per sections 4-5, resolving the
-   `encode`-needs-weights wrinkle (section 4) and naming the auxiliary weight slices (section 6)
-   as part of writing them, not after.
+1. Add `quantum/circuits/base.py` (`RotationShape`, `CircuitWeights`, `Circuit` protocol,
+   `CircuitBase` default `build()`). No existing code changes yet.
+2. Add `quantum/circuits/vqc.py` and `quantum/circuits/qcnn.py` per sections 5-6.
 3. Add `quantum/circuits/registry.py`.
-4. Write a short parity test: for a fixed seed, fixed weights, and a fixed input batch, assert the
-   new `VQCCircuit().build(...)` and `QCNNCircuit().build(...)` produce identical output to the
-   current `QuantumClassifier._vqc_circuit` / `_qcnn_implementation` (bitwise or to float
-   tolerance). This is the actual safety net for the refactor — everything above is a reshuffle of
-   existing gate sequences, and this test is what proves nothing moved.
-5. Only once step 4 passes: switch `QuantumClassifier.set_circuit()` to the registry-based version
-   (section 8), and delete `_vqc_circuit`, `_vqc_state_circuit`, `_qcnn_implementation`,
-   `_qcnn_state_circuit` from `architectures.py`.
-6. Switch `train.py`'s `NUM_WEIGHTS` computation to `VQC._impl.n_weights(...)`.
-7. Re-run one short training job (a handful of epochs, small config) end to end and confirm the
-   loss curve and checkpoint format are unchanged before relying on this for real runs.
+4. Add an `aux_weights:` block to `hydra_configs/{VQC,QAE,VPC,QFI,AOJ}/base.yaml` (one key per
+   circuit's `aux_defaults`).
+5. Confirm the optimizer/checkpoint risk flagged in section 3 (`QuantumTrainer`'s
+   `step_and_cost`/checkpoint code needs to handle `rot` + named `aux` as separate trainables, not
+   one flat array) before relying on this shape.
+6. Write a parity test: for a fixed seed, a `CircuitWeights` built to match today's flat weight
+   values exactly, and a fixed input batch, assert the new `VQCCircuit().build(...)` and
+   `QCNNCircuit().build(...)` produce identical output to the current `_vqc_circuit` /
+   `_qcnn_implementation` (float tolerance). This is the actual safety net for the refactor.
+7. Only once step 6 passes: switch `QuantumClassifier.set_circuit()` to the registry-based version
+   (section 8), delete `_vqc_circuit`, `_vqc_state_circuit`, `_qcnn_implementation`,
+   `_qcnn_state_circuit` from `architectures.py`, switch `train.py`'s weight construction, and
+   update `losses.py`'s bias read.
+8. Re-run one short training job (a handful of epochs, small config) end to end and confirm the
+   loss curve and checkpoint format are unchanged (adjusted for the new `CircuitWeights`
+   serialization) before relying on this for real runs.
 
-Steps 1-4 touch no existing behavior and can be merged on their own. Step 5 is the only point where
+Steps 1-4 touch no existing behavior and can be merged on their own. Step 7 is the only point where
 the old code paths are removed — gate it on the parity test, not on inspection.
