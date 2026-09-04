@@ -1,0 +1,35 @@
+seed: 'QFI_base'
+base_dir: '/work/abal/qae_hep/'
+train: true
+wires: 4
+shots: 5000
+train_n: 1000
+valid_n: 400
+batch_size: 1
+epochs: 25
+improv: 0.01
+extra_weights: null
+backend: 'autograd'
+device_name: 'lightning.kokkos'
+lr: 0.05
+lr_decay: false
+save: true
+flat: false
+evictable: false
+separate_ancilla: false
+resume: false
+desc: 'Training run'
+norm_pt: false
+substructure: false
+patience: 2
+use_reuploading: false
+loss: 'MSE'
+dataset: 'jetclass'
+save_dir: '/work/abal/qae_hep/saved_models/'
+data_dir: '/ceph/abal/QML/JetClass/'
+dump: '/ceph/abal/QML/JetClass/dumps/' # only for testing
+read_n: 2000 # only for testing
+load: false # only for testing
+log_wandb: false # only for testing
+load_best: false # only for testing
+circuit_type: 'normal'

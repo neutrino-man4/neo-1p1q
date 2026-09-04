@@ -1,0 +1,11 @@
+awkward==2.6.8
+fastjet==3.4.2.1
+h5py==3.11.0
+loguru==0.7.2
+matplotlib==3.9.2
+numpy==2.1.1
+pandas==2.2.2
+PennyLane==0.37.0
+scikit_learn==1.5.2
+torch==2.4.0+cpu
+tqdm==4.66.5

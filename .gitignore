@@ -1,0 +1,26 @@
+# OS / editor junk
+*.DS_Store
+._*
+
+# secrets / local-only
+.env
+.Xauthority
+condor/.Xauthority
+
+# python cache
+__pycache__/
+*.py[cod]
+
+# large or regenerable data and outputs
+outputs/
+saved_models/
+best_models/
+*.zip
+*.gz
+*.h5
+*.npy
+*.pkl
+
+# stale HTCondor staging copies (regenerated at submit time, not source)
+condor/qae_hep/
+condor/hydra/

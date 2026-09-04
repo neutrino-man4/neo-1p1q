@@ -1,0 +1,992 @@
+# pylint: disable=maybe-no-member
+from typing import Optional, Callable, Union, List, Dict, Tuple, Any
+import pennylane as qml
+from helpers.utils import getIndex
+from itertools import combinations
+import time
+from tqdm import tqdm
+import pennylane.numpy as np
+import os
+import pathlib
+import helpers.utils as ut
+import subprocess
+from torch.utils.data import DataLoader
+from sklearn.metrics import roc_auc_score
+import json
+
+
+def sigmoid(x: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+    """
+    Sigmoid activation function.
+    
+    Args:
+        x: Input value or array
+        
+    Returns:
+        Sigmoid of input
+    """
+    return 1 / (1 + np.exp(-x))
+
+
+class QuantumClassifier:
+    """
+    A Quantum Classifier that uses quantum circuits for classification tasks.
+    
+    This class encapsulates all the functionality needed to create, configure,
+    and run quantum classification circuits using PennyLane.
+    
+    Args:
+        wires: Number of qubits to use in the circuit
+        layers: Number of layers in the quantum circuit
+        shots: Number of shots for measurements on quantum states
+        dev_name: Name of the quantum device to use
+        use_ancilla: Whether to use an ancilla qubit
+        backend_name: Backend for the QNode (e.g., 'autograd', 'torch', 'jax')
+        test: If True, sets the circuit immediately for testing
+    """
+    
+    def __init__(
+        self, 
+        wires: int = 4,
+        layers: int = 1,
+        shots: int = 5000,
+        dev_name: str = 'default.qubit',
+        use_ancilla: bool = False,
+        backend_name: str = 'autograd',
+        test: bool = False,
+        fisher_computation: bool = False,approx=None,**kwargs: Any
+    ) -> None:
+        # Circuit configuration
+        self.n_qubits = wires
+        self.num_layers = layers
+        self.use_ancilla = use_ancilla
+        self.backend = backend_name
+        self.n_trash_qubits = -1
+        self.separate_ancilla = False
+        self.aux_wire=None
+        self.approx=approx
+        # Initialize wire configurations
+        self._initialize_wires(fisher_computation=fisher_computation)
+        
+        # Set up device
+        self.device = self._set_device(shots=shots, device_name=dev_name)
+        
+        # Circuit and weights
+        self.circuit: Optional[qml.QNode] = None
+        self.state_circuit_qnode: Optional[qml.QNode] = None
+        self.current_weights: Optional[np.ndarray] = None
+        
+        # Data indices for particle properties
+        self.index = {
+            'eta': getIndex('particle', 'eta'),
+            'phi': getIndex('particle', 'phi'), 
+            'pt': getIndex('particle', 'pt')
+        }
+        
+        if test:
+            self.set_circuit()
+            try:
+                self.total_batches=kwargs['read_n']
+                print(f"Will read {self.total_batches} batches with batch size 1")
+            except:
+                self.total_batches=100000
+                print("WARNING: total_batches not set, using default value of 100000")
+    
+    def _initialize_wires(self,fisher_computation=False) -> None:
+        """
+        Initialize wire (qubit) indices and create necessary combinations.
+        """
+        total_qubits = self.n_qubits
+        
+        if self.use_ancilla:
+            total_qubits += 1
+            self.truth_wire = total_qubits - 1  # Last wire is the truth wire
+        else:
+            self.truth_wire = None
+            
+        self.all_wires = list(range(total_qubits))
+        if (fisher_computation) and (self.approx!= 'adjoint'):
+            self.all_wires = list(range(self.n_qubits+1))
+            self.aux_wire = self.all_wires[-1]
+        self.auto_wires = list(range(self.n_qubits))
+        self.two_comb_wires = list(combinations(range(self.n_qubits), 2))
+    
+    def _set_device(self, shots: int, device_name: str) -> qml.Device:
+        """
+        Set up the quantum device for simulation/execution.
+        
+        Args:
+            shots: Number of shots for each measurement
+            device_name: Name of the quantum device
+            
+        Returns:
+            Initialized PennyLane device
+        """
+        device = qml.device(device_name, wires=len(self.all_wires), shots=shots)
+        print(f"Device initialized: {device}")
+        return device
+    
+    def print_training_params(self) -> None:
+        """
+        Print initialized training parameters for verification.
+        Includes a pause to allow user review.
+        """
+        print("\n Sanity check: \n")
+        print('all_wires:', self.all_wires)
+        print('auto_wires:', self.auto_wires)  
+        print('two_comb_wires:', self.two_comb_wires)
+        print('no. of layers:', self.num_layers)
+        print('index:', self.index)
+        print('Using truth wire (if None, then unused):', self.truth_wire)
+        print('\n' + '#' * 46 + '\n')
+        print("Sleep on it for 3s")
+        print("Maybe you want to change something?")
+        print("Then press CTRL-C")
+        print('\n' + '#' * 50 + '\n')
+        time.sleep(3)
+        print("LETS GOOOOOOOOOOOOO")
+        time.sleep(1)
+    
+    def _vqc_circuit(
+        self, 
+        weights: np.ndarray, 
+        inputs: Optional[np.ndarray] = None
+    ) -> Any:
+        """
+        Core quantum circuit implementation for classification.
+        
+        Args:
+            weights: Circuit parameters for rotations
+            inputs: Input data to be encoded in the circuit
+            
+        Returns:
+            Expected value of Pauli-Z measurement on first qubit
+        """
+        N = len(self.auto_wires)
+        
+        # Scaling factor from weights
+        sf = 2 * np.pi * sigmoid(weights[-1]) + 1
+        
+        # Multi-layer circuit
+        for L in range(self.num_layers):
+            # State preparation using input data
+            for w in self.auto_wires:
+                # Extract spherical coordinates from input data
+                zenith = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['eta']])    # eta
+                azimuth = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['phi']])   # phi  
+                radius = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['pt']])     # pt
+                
+                # Handle single sample case
+                if inputs.shape[0] == 1:
+                    zenith = zenith.item()
+                    azimuth = azimuth.item()
+                    radius = radius.item()
+                
+                # Apply rotations based on input data
+                #qml.RY(sf * radius * zenith, wires=w)
+                qml.RY(sf*radius*zenith, wires=w)
+                qml.RX(sf * radius * azimuth, wires=w)
+            
+            # Calculate weight indices for this layer
+            start = 3 * L * N
+            
+            # Ring of CNOT gates for entanglement
+            for w in self.auto_wires:
+                qml.CNOT(wires=[w, (w + 1) % N])
+            
+            # Parameterized rotations
+            rot_z = weights[start+0:start+3*N:3]  # Indices: 0, 3, 6, 9, ... (RZ rotations)
+            rot_y = weights[start+1:start+3*N:3]  # Indices: 1, 4, 7, 10, ... (RY rotations)  
+            rot_x = weights[start+2:start+3*N:3]  # Indices: 2, 5, 8, 11, ... (RX rotations)
+
+            for rz, ry, rx, w in zip(rot_z, rot_y, rot_x, self.auto_wires):
+                qml.Rot(0., ry, rz, wires=w)  # Note: qml.Rot(phi, theta, omega) = RZ(omega)RY(theta)RZ(phi)
+                qml.RX(rx, wires=w)
+            # Return the full quantum state        
+        obs = [qml.PauliZ(i) for i in self.auto_wires]
+        coeffs = weights[-11:-1]
+        H = qml.Hamiltonian(coeffs, obs)        
+        return qml.expval(H)
+        #return qml.expval(qml.PauliZ(0))
+    
+    def _vqc_state_circuit(
+        self, 
+        weights: np.ndarray, 
+        inputs: Optional[np.ndarray] = None
+    ) -> Any:
+        """
+        State version of the VQC circuit for QFI calculations.
+        Same as _vqc_circuit but returns the full quantum state.
+        
+        Args:
+            weights: Circuit parameters for rotations
+            inputs: Input data to be encoded in the circuit
+            
+        Returns:
+            Full quantum state vector
+        """
+        N = len(self.auto_wires)
+        
+        # Scaling factor from weights
+        sf = 2 * np.pi * sigmoid(weights[-1]) + 1
+        
+        # Multi-layer circuit
+        for L in range(self.num_layers):
+            # State preparation using input data
+            for w in self.auto_wires:
+                # Extract spherical coordinates from input data
+                zenith = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['eta']])    # eta
+                azimuth = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['phi']])   # phi  
+                radius = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['pt']])     # pt
+                
+                # Handle single sample case
+                if inputs.shape[0] == 1:
+                    zenith = zenith.item()
+                    azimuth = azimuth.item()
+                    radius = radius.item()
+                
+                # Apply rotations based on input data
+                qml.RY(sf * radius * zenith, wires=w)
+                qml.RX(sf * radius * azimuth, wires=w)
+            
+            # Calculate weight indices for this layer
+            start = 3 * L * N
+            
+            # Ring of CNOT gates for entanglement
+            for w in self.auto_wires:
+                qml.CNOT(wires=[w, (w + 1) % N])
+            
+            # Parameterized rotations
+            rot_z = weights[start+0:start+3*N:3]  # Indices: 0, 3, 6, 9, ... (RZ rotations)
+            rot_y = weights[start+1:start+3*N:3]  # Indices: 1, 4, 7, 10, ... (RY rotations)  
+            rot_x = weights[start+2:start+3*N:3]  # Indices: 2, 5, 8, 11, ... (RX rotations)
+
+            for rz, ry, rx, w in zip(rot_z, rot_y, rot_x, self.auto_wires):
+                qml.Rot(0., ry, rz, wires=w)  # Note: qml.Rot(phi, theta, omega) = RZ(omega)RY(theta)RZ(phi)
+                qml.RX(rx, wires=w)
+            # Return the full quantum state        
+        return qml.state()
+    
+    def _qcnn_implementation(
+        self, 
+        weights: np.ndarray, 
+        inputs: Optional[np.ndarray] = None
+    ) -> List[Any]:
+        """
+        Quantum Convolutional Neural Network circuit implementation.
+        
+        Args:
+            weights: Circuit parameters for rotations
+            inputs: Input data to be encoded in the circuit
+            
+        Returns:
+            List of expected values of Pauli-Z measurements on all qubits
+        """
+        N = len(self.auto_wires)
+        
+        # Scaling factor
+        sf = 2 * np.pi * sigmoid(weights[-2]) + 1
+        
+        # State preparation
+        for w in self.auto_wires:
+            zenith = np.squeeze(inputs[:, w, self.index['eta']])
+            azimuth = np.squeeze(inputs[:, w, self.index['phi']])
+            radius = np.squeeze(inputs[:, w, self.index['pt']])
+            
+            if inputs.shape[0] == 1:
+                zenith = zenith.item()
+                azimuth = azimuth.item() 
+                radius = radius.item()
+                
+            qml.RY(sf * radius * zenith, wires=w)
+            qml.RZ(sf * radius * azimuth, wires=w)
+        
+        # Initial entangling layer
+        for w in self.auto_wires:
+            qml.CY(wires=[w, (w + 1) % N])
+        
+        # Convolutional layers
+        for L in range(self.num_layers):
+            phi = weights[2 * L]
+            theta = weights[2 * L + 1]
+            
+            for w in self.auto_wires[:-(1 + L)]:
+                qml.RZ(phi, wires=w)
+                qml.RY(theta, wires=w)
+                qml.RZ(phi, wires=(w + L + 1) % N)
+                qml.RY(theta, wires=(w + L + 1) % N)
+                qml.CNOT(wires=[w, (w + 1 + L) % N])
+        
+        return [qml.expval(qml.PauliZ(i)) for i in self.auto_wires]
+    
+    def _qcnn_state_circuit(
+        self, 
+        weights: np.ndarray, 
+        inputs: Optional[np.ndarray] = None
+    ) -> Any:
+        """
+        State version of the QCNN circuit for QFI calculations.
+        Same as _qcnn_implementation but returns the full quantum state.
+        
+        Args:
+            weights: Circuit parameters for rotations
+            inputs: Input data to be encoded in the circuit
+            
+        Returns:
+            Full quantum state vector
+        """
+        N = len(self.auto_wires)
+        
+        # Scaling factor
+        sf = 2 * np.pi * sigmoid(weights[-2]) + 1
+        
+        # State preparation
+        for w in self.auto_wires:
+            zenith = np.squeeze(inputs[:, w, self.index['eta']])
+            azimuth = np.squeeze(inputs[:, w, self.index['phi']])
+            radius = np.squeeze(inputs[:, w, self.index['pt']])
+            
+            if inputs.shape[0] == 1:
+                zenith = zenith.item()
+                azimuth = azimuth.item() 
+                radius = radius.item()
+                
+            qml.RY(sf * radius * zenith, wires=w)
+            qml.RZ(sf * radius * azimuth, wires=w)
+        
+        # Initial entangling layer
+        for w in self.auto_wires:
+            qml.CY(wires=[w, (w + 1) % N])
+        
+        # Convolutional layers
+        for L in range(self.num_layers):
+            phi = weights[2 * L]
+            theta = weights[2 * L + 1]
+            
+            for w in self.auto_wires[:-(1 + L)]:
+                qml.RZ(phi, wires=w)
+                qml.RY(theta, wires=w)
+                qml.RZ(phi, wires=(w + L + 1) % N)
+                qml.RY(theta, wires=(w + L + 1) % N)
+                qml.CNOT(wires=[w, (w + 1 + L) % N])
+        
+        return qml.state()
+    
+    def set_circuit(self, circuit_type: str = 'normal') -> None:
+        """
+        Configure the QNode circuit for the quantum classifier.
+        
+        Args:
+            circuit_type: Type of circuit ('normal' or 'CNN')
+        """
+        if circuit_type == 'CNN':
+            print("Using CNN circuit with 1 layer (for now)")
+            print("Things might be slow")
+            time.sleep(2)
+            self.circuit = qml.QNode(
+                self._qcnn_implementation, 
+                self.device, 
+                interface=self.backend
+            )
+            self.state_circuit_qnode = qml.QNode(
+                self._qcnn_state_circuit,
+                self.device,
+                interface=self.backend
+            )
+        else:
+            self.circuit = qml.QNode(
+                self._vqc_circuit, 
+                self.device, 
+                interface=self.backend
+            )
+            self.state_circuit_qnode = qml.defer_measurements(qml.QNode(
+                self._vqc_state_circuit,
+                self.device,
+                interface=self.backend
+            ))
+    
+    def fetch_circuit(self) -> qml.QNode:
+        """
+        Get the quantum circuit for inference or training.
+        
+        Returns:
+            Configured quantum node (QNode) circuit
+        """
+        if self.circuit is None:
+            self.set_circuit()
+        return self.circuit
+    
+    def state_circuit(
+        self,
+        weights: np.ndarray,
+        inputs: np.ndarray
+    ) -> np.ndarray:
+        """
+        Get the quantum state from the circuit for a specific input.
+        
+        Args:
+            weights: Circuit parameters
+            inputs: Input data for a single sample (shape: (1, n_qubits, 3))
+        
+        Returns:
+            Quantum state vector
+        """
+        if self.state_circuit_qnode is None:
+            self.set_circuit()
+        
+        # Ensure inputs are in the right shape for a single sample
+        if inputs.ndim == 2:
+            inputs = inputs[np.newaxis, ...]  # Add batch dimension
+        
+        return self.state_circuit_qnode(weights, inputs)
+    
+    def quantum_fisher(
+        self,
+        input_point: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Calculate the Quantum Fisher Information Matrix for a specific input point.
+        Returns only the 3N x 3N submatrix for rotation parameters, reordered by qubit.
+        
+        Args:
+            input_point: Single input data point (shape: (n_qubits, 3))
+        
+        Returns:
+            Quantum Fisher Information Matrix (shape: (3N, 3N)) where N = n_qubits
+            Ordered as [Y0,Z0,X0, Y1,Z1,X1, ..., YN-1,ZN-1,XN-1] for each qubit
+        """
+        if self.state_circuit_qnode is None:
+            self.set_circuit()
+        
+        # Ensure input_point is in the right shape
+        if input_point.ndim == 2:
+            #print("WARNING: input_point is 2D, reshaping to (1, n_qubits, 3) by adding a batch dimension")
+            input_point = input_point[np.newaxis, ...]  # Add batch dimension: (1, n_qubits, 3)
+        elif input_point.ndim == 1:
+            # If it's flattened, reshape it
+            #print("WARNING: input_point is 1D, reshaping to (1, n_qubits, 3)")
+            input_point = input_point.reshape(1, len(self.auto_wires), 3)
+        
+        # Get full QFI matrix
+        if self.approx=='adjoint':
+            metric_fn = lambda w: qml.adjoint_metric_tensor(self.state_circuit_qnode)(w, input_point)    
+        else:
+            metric_fn = lambda w: qml.metric_tensor(self.state_circuit_qnode,hybrid=True,aux_wire=self.aux_wire,approx=self.approx)(w, input_point)
+        full_qfi=metric_fn(self.current_weights)
+        N = len(self.auto_wires)
+        # Extract only the 3N x 3N submatrix (rotation parameters only, fuck you bias)
+        #import pdb;pdb.set_trace()
+        rotation_qfi = full_qfi[:3*N*self.num_layers, :3*N*self.num_layers]
+        
+        # the order we deserve: [X0, X1, ..., XN-1, Y0, Y1, ..., YN-1, Z0, Z1, ..., ZN-1]
+        # the order we need: [Y0, Z0, X0, Y1, Z1, X1, ..., YN-1, ZN-1, XN-1]
+        # reorder_indices = []
+        # for i in range(N):
+        #     reorder_indices.extend([
+        #         N + i,      # Y rotation for qubit i (old index N+i -> new index 3i)
+        #         2*N + i,    # Z rotation for qubit i (old index 2N+i -> new index 3i+1) 
+        #         i           # X rotation for qubit i (old index i -> new index 3i+2)
+        #     ])
+        
+        # # Reorder both rows and columns
+        # reordered_qfi = rotation_qfi[np.ix_(reorder_indices, reorder_indices)]
+        
+        return rotation_qfi#reordered_qfi
+        
+    def run_fisher_computation(
+        self,
+        dataloader: DataLoader,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute Fisher Information Matrix for each input point in the dataloader.
+        
+        Args:
+            dataloader: DataLoader containing input data and labels (batch_size=1)
+            
+        Returns:
+            Tuple of (fisher_matrices, labels) where:
+            - fisher_matrices: (N, Np, Np) array of Fisher Information Matrices
+            - labels: (N,) array of truth labels
+        """
+        fisher_matrices = []
+        all_labels = []
+        
+        for batch_inputs, batch_labels in tqdm(dataloader, desc="Computing Fisher Information",total=self.total_batches):
+            # batch_inputs.shape = (1, n_qubits, 3)
+            # batch_labels.shape = (1,)
+            
+            # Remove batch dimension for quantum_fisher input
+            input_point = batch_inputs[0]  # Shape: (n_qubits, 3)
+            
+            # Compute QFI for this specific input point
+            qfi = self.quantum_fisher(input_point)
+            fisher_matrices.append(qfi)
+            all_labels.append(batch_labels[0])  # Extract single label
+        
+        # Convert to numpy arrays
+        fisher_matrices = np.array(fisher_matrices)  # Shape: (N, Np, Np)
+        all_labels = np.array(all_labels)            # Shape: (N,)
+        
+        return fisher_matrices, all_labels
+
+    def fetch_backend(self) -> str:
+        """
+        Get the backend being used for the QNode.
+        
+        Returns:
+            Name of the backend
+        """
+        return self.backend
+    
+    def load_weights(self, model_path: str, train: bool = False,rearrange=False) -> None:
+        """
+        Load pre-trained weights for the classifier.
+        
+        Args:
+            model_path: Path to the file containing the pre-trained model
+            train: If True, enables gradients for the weights
+        """
+        dictionary = ut.Unpickle(model_path)
+        self.current_weights = np.array(dictionary['weights'], requires_grad=train)
+        if rearrange:
+            x_weights= self.current_weights[:self.n_qubits*self.num_layers]
+            y_weights = self.current_weights[self.n_qubits*self.num_layers:2*self.n_qubits*self.num_layers]
+            z_weights = self.current_weights[2*self.n_qubits*self.num_layers:3*self.n_qubits*self.num_layers]
+            self.current_weights = np.zeros_like(self.current_weights)
+
+            self.current_weights[2:3*self.n_qubits*self.num_layers:3] = x_weights
+            self.current_weights[:3*self.n_qubits*self.num_layers:3] = z_weights
+            self.current_weights[1:3*self.n_qubits*self.num_layers:3] = y_weights
+    def print_weights(self) -> None:
+        """Print the current weights of the quantum classifier."""
+        print('Current weights: \n\n', self.current_weights)
+    
+    def run_inference(
+        self, 
+        dataloader: DataLoader, 
+        loss_fn: Callable,
+        loss_type: str = 'BCE'
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Run inference on the classifier circuit using loaded weights and a dataloader.
+        
+        Args:
+            dataloader: DataLoader containing input data and labels (batch_size=1)
+            loss_fn: Loss function to calculate the quantum cost (should be VQC_cost)
+            loss_type: Type of loss function to use
+            
+        Returns:
+            Tuple of (costs, scores) both with shape (N_inputs,)
+            
+        Raises:
+            ValueError: If weights are not initialized
+        """
+        if self.current_weights is None:
+            raise ValueError(
+                'Weights not initialized. Load a model first by calling load_weights(model_path)'
+            )
+        
+        all_costs = []
+        all_scores = []
+        all_labels = []
+        for batch_inputs, batch_labels in tqdm(dataloader, desc="Running inference",total=self.total_batches):
+            # batch_inputs.shape = (1, n_qubits, 3)
+            # batch_labels.shape = (1,)
+            
+            # Compute cost and score for this single sample
+            cost, score = loss_fn(
+                self.current_weights,
+                inputs=batch_inputs,
+                labels=batch_labels,
+                quantum_circuit=self.circuit,
+                return_scores=True,
+                loss_type=loss_type
+            )
+            
+            all_costs.append(float(cost))
+            all_scores.append(float(score))
+            all_labels.append(float(batch_labels[0]))
+        # Convert to numpy arrays
+        costs = np.array(all_costs)    # Shape: (N_inputs,)
+        scores = np.array(all_scores)  # Shape: (N_inputs,)
+        labels = np.array(all_labels)  # Shape: (N_inputs,)
+        
+        print("Inference completed")
+        return costs, scores, labels
+class QuantumTrainer:
+    """
+    A class for training quantum classification circuits.
+    
+    Args:
+        model: The VQC circuit to be trained
+        lr: Learning rate for the optimizer
+        optimizer: The optimizer used for training
+        loss_fn: The loss function used for optimization
+        save: Whether to save the trained model and checkpoints
+        train_max_n: Maximum number of training samples
+        valid_max_n: Maximum number of validation samples  
+        epochs: Number of training epochs
+        patience: Patience for early stopping
+        improv: Minimum improvement threshold for early stopping
+        wandb: Weights & Biases logger instance
+        lr_decay: Whether to apply learning rate decay
+        loss_type: Type of loss function ('BCE', etc.)
+        **kwargs: Additional keyword arguments
+    """
+    
+    def __init__(
+        self,
+        model: QuantumClassifier,
+        lr: float = 0.001,
+        optimizer: Optional[Callable] = None,
+        loss_fn: Optional[Callable] = None,
+        save: bool = True,
+        train_max_n: int = 10000,
+        valid_max_n: int = 2000,
+        epochs: int = 20,
+        patience: int = 2,
+        improv: float = 0.01,
+        wandb: Optional[Any] = None,
+        lr_decay: bool = False,
+        loss_type: str = 'MSE',
+        **kwargs: Any
+    ) -> None:
+        self.model = model
+        self.circuit = model.fetch_circuit()
+        self.backend = model.fetch_backend()
+        
+        # Training parameters
+        self.init_weights = kwargs.get('init_weights')
+        self.batch_size = kwargs.get('batch_size', 1000)
+        self.logger = kwargs.get('logger')
+        
+        # Training configuration
+        self.train_max_n = train_max_n
+        self.valid_max_n = valid_max_n
+        self.lr_decay = lr_decay
+        self.epochs = epochs
+        self.patience = patience
+        self.saving = save
+        self.loss_type = loss_type
+        self.improv = improv
+        self.is_evictable = False
+        self.wandb = wandb
+        
+        # Training state
+        self.current_weights = self.init_weights
+        self.current_epoch = 0
+        self.optim = optimizer
+        self.quantum_loss = loss_fn
+        self.history: Dict[str, List[float]] = {'train': [], 'val': [], 'auc': []}
+        
+        # Directories (to be set later)
+        self.save_dir: Optional[str] = None
+        self.checkpoint_dir: Optional[str] = None
+        self.seed: Optional[Any] = None
+        
+        print(f'Performing optimization with: {self.optim} | Setting Learning rate: {lr}')
+        print('Backend:', self.backend, '\n')
+    
+    def iteration(
+        self, 
+        data: np.ndarray, 
+        labels: np.ndarray, 
+        train: bool = False
+    ) -> Union[float, Tuple[float, float]]:
+        """
+        Perform a single training or validation iteration.
+        
+        Args:
+            data: Batch of input data
+            labels: Corresponding labels
+            train: Whether to perform training (True) or validation (False)
+            
+        Returns:
+            Training loss (if train=True) or tuple of (validation loss, scores)
+        """
+        if train:
+            self.current_weights, cost = self.optim.step_and_cost(
+                self.quantum_loss,
+                self.current_weights,
+                inputs=data,
+                labels=labels,
+                quantum_circuit=self.circuit,
+                loss_type=self.loss_type
+            )
+            return float(cost)
+        else:
+            cost, scores = self.quantum_loss(
+                self.current_weights,
+                inputs=data,
+                labels=labels,
+                quantum_circuit=self.circuit,
+                return_scores=True,
+                loss_type=self.loss_type
+            )
+            return float(cost), float(scores)
+    
+    def is_evictable_job(self, seed: Optional[Any] = None) -> None:
+        """
+        Mark the current job as evictable and enable checkpoint copying to EOS.
+        
+        Args:
+            seed: Random seed for checkpoint saving
+        """
+        self.is_evictable = True
+        self.seed = seed
+    
+    def run_training_loop(
+        self, 
+        train_loader: DataLoader, 
+        val_loader: DataLoader
+    ) -> Dict[str, List[float]]:
+        """
+        Execute the full training loop, including training and validation.
+        
+        Args:
+            train_loader: DataLoader for the training dataset
+            val_loader: DataLoader for the validation dataset
+            
+        Returns:
+            Training and validation history (losses and accuracies)
+        """
+        self.print_params('Initial weights: ')
+        n_decays = 0
+        last_decay = 0
+        complete = False
+        
+        for n_epoch in tqdm(range(self.epochs + 1)):
+            sample_counter = 0
+            batch_yield = 0
+            self.current_epoch = n_epoch
+            losses = 0.0
+            
+            # Early stopping logic
+            if n_epoch > 4:
+                recent_val_metrics = self.history['auc'][-2:]
+                previous_val_metric = self.history['auc'][-3]
+                improvement = np.mean(recent_val_metrics) - previous_val_metric
+                
+                if improvement < self.improv:
+                    if self.lr_decay:
+                        if (n_decays < self.patience) and ((n_epoch - last_decay) >= 2):
+                            last_decay = self.current_epoch
+                            n_decays += 1
+                            self.optim.stepsize *= 0.5
+                            self.logger.info(
+                                f'No improvement observed over last 3 epochs. \n'
+                                f'Learning rate decayed to {self.optim.stepsize} at epoch {n_epoch}'
+                            )
+                        elif n_decays >= self.patience:
+                            self.logger.info(
+                                f"\n\nNo improvement over last 3 epochs and {self.patience} "
+                                f"decay steps. Early stopping!\n\n"
+                            )
+                            self.save(self.save_dir, name='trained_model.pickle')
+                            complete = True
+                            break
+                    else:
+                        self.logger.info(
+                            "\n\nNo improvement over last 3 epochs. Early stopping!\n\n"
+                        )
+                        self.save(self.save_dir, name='trained_model.pickle')
+                        complete = True
+                        break
+            
+            # Training phase
+            if n_epoch > 0:
+                print("Start Training")
+                start = round(time.time(), 2)
+                
+                for data, labels in tqdm(
+                    train_loader, 
+                    total=int(self.train_max_n / self.batch_size)
+                ):
+                    sample_counter += data.shape[0]
+                    batch_yield += 1
+                    loss = self.iteration(data, labels=labels, train=True)
+                    losses += loss
+                    
+                    if self.wandb is not None:
+                        self.wandb.log({'train_loss': losses / batch_yield})
+                
+                end = round(time.time(), 2)
+                train_loss = losses / batch_yield
+                self.print_params('Current weights: \n\n')
+                print('Now validating!')
+            else:
+                print('Running initial validation pass')
+            
+            # Validation phase
+            val_loss = 0.0
+            val_batch_yield = 0
+            val_score = []
+            val_labels = []
+            
+            for data, labels in tqdm(
+                val_loader, 
+                total=int(self.valid_max_n / self.batch_size)
+            ):
+                loss, score = self.iteration(data, labels=labels, train=False)
+                val_loss += loss
+                val_score.append(score)
+                val_labels.append(labels)
+                val_batch_yield += 1
+            
+            val_loss = val_loss / val_batch_yield
+            val_labels = np.array(val_labels).flatten()
+            val_score = np.array(val_score).flatten()
+            val_auc = roc_auc_score(val_labels, val_score)
+            val_std = np.std(val_score)
+            val_score_mean = np.mean(val_score)
+            
+            if self.wandb is not None:
+                self.wandb.log({'val_loss': val_loss, 'val_auc': val_auc})
+            
+            # Logging
+            if n_epoch > 0:
+                self.logger.info(
+                    f'Epoch {n_epoch}: Network with {len(self.model.auto_wires)} input qubits '
+                    f'trained on {sample_counter} samples in {batch_yield} batches'
+                )
+                self.logger.info(
+                    f'Epoch {n_epoch}: Train Loss = {train_loss:.3f} | Val loss = {val_loss:.3f} | '
+                    f'Val preds mean and std = {val_score_mean:.3f}, {val_std:.3f} | '
+                    f'Val AUC = {val_auc:.3f} | Time taken = {end-start:.3f} seconds\n\n'
+                )
+                self.history['train'].append(train_loss)
+            else:
+                self.logger.info('Initial validation pass completed')
+                self.logger.info(
+                    f'Epoch {n_epoch} (No training performed): Val loss = {val_loss:.3f} | '
+                    f'Val AUC = {val_auc:.3f} | Val preds mean and std = {val_score_mean:.3f}, {val_std:.3f}\n\n'
+                )
+            
+            self.history['val'].append(val_loss)
+            self.history['auc'].append(val_auc)
+            
+            # Saving
+            if self.saving:
+                name = None
+                if n_epoch == self.epochs:
+                    name = 'trained_model.pickle'
+                elif n_epoch == 0:
+                    name = 'init_weights.pickle'
+                
+                self.save(self.save_dir, name=name)
+                
+                if self.is_evictable and n_epoch > 0:
+                    print('Will copy over checkpoints')
+                    checkpoint_name = f'ep{self.current_epoch:02}.pickle'
+                    try:
+                        tmpfile = (
+                            f"{os.environ['EOS_MGM_URL']}://eos/user/"
+                            f"{os.environ['CERN_USERNAME'][0]}/{os.environ['CERN_USERNAME']}/"
+                            f"QML/checkpoint_dumps/{self.seed}/{checkpoint_name}"
+                        )
+                        exec_path = os.path.join(os.environ['BELLE2_EXEC'], 'xrdcp')
+                        subprocess.call(
+                            f'{exec_path} {os.path.join(self.checkpoint_dir, checkpoint_name)} {tmpfile}',
+                            shell=True
+                        )
+                    except Exception:
+                        print("Failed to copy over checkpoints")
+        
+        if not complete:
+            ut.Pickle(self.history, 'history.pickle', path=self.save_dir)
+        
+        return self.history
+    
+    def print_params(self, prefix: Optional[str] = None) -> None:
+        """
+        Print the current parameters (weights) of the quantum classifier.
+        
+        Args:
+            prefix: Optional prefix to print before the parameters
+        """
+        if prefix is not None:
+            print(prefix)
+        print('autograd weights:', self.current_weights, '\n')
+    
+    def save(self, save_dir: str, name: Optional[str] = None) -> None:
+        """
+        Save the model weights to a specified directory.
+        
+        Args:
+            save_dir: Directory where the model weights will be saved
+            name: The name of the file to save. If not provided, 
+                  the file name will be based on the current epoch
+        """
+        opt_name = None
+        
+        if name is None:
+            if self.current_epoch > 100:
+                name = f'ep{self.current_epoch:03}.pickle'
+                opt_name = f'optimizer_ep{self.current_epoch:03}.json'
+            else:
+                name = f'ep{self.current_epoch:02}.pickle'
+                opt_name = f'optimizer_ep{self.current_epoch:02}.json'
+        
+        if 'trained' not in name:
+            save_dir = self.checkpoint_dir
+        else:
+            opt_name = 'optimizer.json'
+        
+        ut.Pickle({'weights': self.current_weights}, name, path=save_dir)
+        
+        # Save optimizer state
+        try:
+            optim_dict = {
+                'stepsize': self.optim.stepsize,
+                'beta1': self.optim.beta1,
+                'beta2': self.optim.beta2,
+                'epsilon': self.optim.eps,
+                'fm': self.optim.fm,
+                'sm': self.optim.sm,
+                't': self.optim.t
+            }
+            
+            with open(os.path.join(save_dir, opt_name), 'w') as f:
+                json.dump(optim_dict, f)
+            print("Optimizer state saved")
+        except Exception as e:
+            print(f"Error saving optimizer state: {str(e)}")
+    
+    def get_current_epoch(self) -> int:
+        """
+        Get the current epoch number during training.
+        
+        Returns:
+            The current epoch number
+        """
+        return self.current_epoch
+    
+    def set_current_epoch(self, epoch: int) -> None:
+        """
+        Set the current epoch number if training is resumed from a checkpoint.
+        
+        Args:
+            epoch: The epoch number to set
+        """
+        self.current_epoch = epoch + 1
+        print("Resume training from epoch:", epoch + 1)
+    
+    def set_directories(self, save_dir: str) -> None:
+        """
+        Set up directories for saving model checkpoints and logs.
+        
+        Args:
+            save_dir: The directory where model and checkpoints will be saved
+        """
+        self.save_dir = save_dir
+        self.checkpoint_dir = os.path.join(save_dir, 'checkpoints')
+        pathlib.Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+    
+    def fetch_history(self) -> Dict[str, List[float]]:
+        """
+        Get the history of training and validation losses and accuracies.
+        
+        Returns:
+            Dictionary containing the history of training and validation metrics
+        """
+        return self.history

@@ -1,0 +1,86 @@
+ARG RELEASE
+ARG LAUNCHPAD_BUILD_ARCH
+LABEL org.opencontainers.image.ref.name=ubuntu
+LABEL org.opencontainers.image.version=22.04
+ADD file:63d5ab3ef0aab308c0e71cb67292c5467f60deafa9b0418cbb220affcd078444 in /
+CMD ["/bin/bash"]
+ENV NVARCH=x86_64 0B buildkit.dockerfile.v0
+ENV NVIDIA_REQUIRE_CUDA=cuda>=12.2 brand=tesla,driver>=470,driver<471 brand=unknown,driver>=470,driver<471 brand=nvidia,driver>=470,driver<471 brand=nvidiartx,driver>=470,driver<471 brand=geforce,driver>=470,driver<471 brand=geforcertx,driver>=470,driver<471 brand=quadro,driver>=470,driver<471 brand=quadrortx,driver>=470,driver<471 brand=titan,driver>=470,driver<471 brand=titanrtx,driver>=470,driver<471 brand=tesla,driver>=525,driver<526 brand=unknown,driver>=525,driver<526 brand=nvidia,driver>=525,driver<526 brand=nvidiartx,driver>=525,driver<526 brand=geforce,driver>=525,driver<526 brand=geforcertx,driver>=525,driver<526 brand=quadro,driver>=525,driver<526 brand=quadrortx,driver>=525,driver<526 brand=titan,driver>=525,driver<526 brand=titanrtx,driver>=525,driver<526 0B buildkit.dockerfile.v0
+ENV NV_CUDA_CUDART_VERSION=12.2.53-1 0B buildkit.dockerfile.v0
+ENV NV_CUDA_COMPAT_PACKAGE=cuda-compat-12-2 0B buildkit.dockerfile.v0
+ARG TARGETARCH 0B buildkit.dockerfile.v0
+LABEL maintainer=NVIDIA CORPORATION <cudatools@nvidia.com> 0B buildkit.dockerfile.v0
+RUN |1 TARGETARCH=amd64 /bin/sh -c apt-get update
+   &&  apt-get install -y --no-install-recommends gnupg2 curl ca-certificates
+   &&  curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/${NVARCH}/cuda-keyring_1.0-1_all.deb
+   &&  dpkg -i cuda-keyring_1.0-1_all.deb
+   &&  apt-get purge --autoremove -y curl
+   &&  rm -rf /var/lib/apt/lists/* # buildkit 10.6MB buildkit.dockerfile.v0
+ENV CUDA_VERSION=12.2.0 0B buildkit.dockerfile.v0
+RUN |1 TARGETARCH=amd64 /bin/sh -c apt-get update
+   &&  apt-get install -y --no-install-recommends cuda-cudart-12-2=${NV_CUDA_CUDART_VERSION} ${NV_CUDA_COMPAT_PACKAGE}
+   &&  rm -rf /var/lib/apt/lists/* # buildkit 150MB buildkit.dockerfile.v0
+RUN |1 TARGETARCH=amd64 /bin/sh -c echo "/usr/local/nvidia/lib" >> /etc/ld.so.conf.d/nvidia.conf
+   &&  echo "/usr/local/nvidia/lib64" >> /etc/ld.so.conf.d/nvidia.conf # buildkit 46B buildkit.dockerfile.v0
+ENV PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin 0B buildkit.dockerfile.v0
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64 0B buildkit.dockerfile.v0
+COPY NGC-DL-CONTAINER-LICENSE / # buildkit 17.3kB buildkit.dockerfile.v0
+ENV NVIDIA_VISIBLE_DEVICES=all 0B buildkit.dockerfile.v0
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility 0B buildkit.dockerfile.v0
+ENV NV_CUDA_LIB_VERSION=12.2.0-1 0B buildkit.dockerfile.v0
+ENV NV_NVTX_VERSION=12.2.53-1 0B buildkit.dockerfile.v0
+ENV NV_LIBNPP_VERSION=12.1.1.14-1 0B buildkit.dockerfile.v0
+ENV NV_LIBNPP_PACKAGE=libnpp-12-2=12.1.1.14-1 0B buildkit.dockerfile.v0
+ENV NV_LIBCUSPARSE_VERSION=12.1.1.53-1 0B buildkit.dockerfile.v0
+ENV NV_LIBCUBLAS_PACKAGE_NAME=libcublas-12-2 0B buildkit.dockerfile.v0
+ENV NV_LIBCUBLAS_VERSION=12.2.1.16-1 0B buildkit.dockerfile.v0
+ENV NV_LIBCUBLAS_PACKAGE=libcublas-12-2=12.2.1.16-1 0B buildkit.dockerfile.v0
+ARG TARGETARCH 0B buildkit.dockerfile.v0
+LABEL maintainer=NVIDIA CORPORATION <cudatools@nvidia.com> 0B buildkit.dockerfile.v0
+RUN |1 TARGETARCH=amd64 /bin/sh -c apt-get update
+   &&  apt-get install -y --no-install-recommends cuda-libraries-12-2=${NV_CUDA_LIB_VERSION} ${NV_LIBNPP_PACKAGE} cuda-nvtx-12-2=${NV_NVTX_VERSION} libcusparse-12-2=${NV_LIBCUSPARSE_VERSION} ${NV_LIBCUBLAS_PACKAGE}
+   &&  rm -rf /var/lib/apt/lists/* # buildkit 1.73GB buildkit.dockerfile.v0
+RUN |1 TARGETARCH=amd64 /bin/sh -c apt-mark hold ${NV_LIBCUBLAS_PACKAGE_NAME} # buildkit 260kB buildkit.dockerfile.v0
+COPY entrypoint.d/ /opt/nvidia/entrypoint.d/ # buildkit 3.06kB buildkit.dockerfile.v0
+COPY nvidia_entrypoint.sh /opt/nvidia/ # buildkit 2.53kB buildkit.dockerfile.v0
+ENV NVIDIA_PRODUCT_NAME=CUDA 0B buildkit.dockerfile.v0
+ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh"] 0B buildkit.dockerfile.v0
+ARG PENNYLANE_VERSION=v0.38.0 0B buildkit.dockerfile.v0
+RUN |1 PENNYLANE_VERSION=v0.38.0 /bin/sh -c apt-get update
+   &&  apt-get install --no-install-recommends -y git libgomp1 python3 python3-pip python3-venv
+   &&  apt-get clean
+   &&  rm -rf /var/lib/apt/lists/* # buildkit 119MB buildkit.dockerfile.v0
+ENV VIRTUAL_ENV=/opt/venv 0B buildkit.dockerfile.v0
+RUN |1 PENNYLANE_VERSION=v0.38.0 /bin/sh -c python3 -m venv $VIRTUAL_ENV # buildkit 15.9MB buildkit.dockerfile.v0
+ENV PATH=/opt/venv/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin 0B buildkit.dockerfile.v0
+RUN |1 PENNYLANE_VERSION=v0.38.0 /bin/sh -c pip install --no-cache-dir custatevec-cu12 # buildkit 66.4MB buildkit.dockerfile.v0
+ENV LD_LIBRARY_PATH=/opt/venv/lib/python3.10/site-packages/cuquantum/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64 0B buildkit.dockerfile.v0
+COPY /opt/pennylane-lightning/dist/ / # buildkit 6.68MB buildkit.dockerfile.v0
+COPY /opt/pennylane-lightning/dist/ / # buildkit 18.5MB buildkit.dockerfile.v0
+RUN |1 PENNYLANE_VERSION=v0.38.0 /bin/sh -c pip install --no-cache-dir --force-reinstall PennyLane_Lightning*.whl
+   &&  rm PennyLane_Lightning*.whl # buildkit 408MB buildkit.dockerfile.v0
+RUN |1 PENNYLANE_VERSION=v0.38.0 /bin/sh -c pip install --no-cache-dir git+https://github.com/PennyLaneAI/pennylane.git@${PENNYLANE_VERSION} # buildkit 1.51MB buildkit.dockerfile.v0
+ENV TZ=Europe/Zurich
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime
+   &&  echo $TZ > /etc/timezone
+   &&  apt-get update
+   &&  apt-get install -y --no-install-recommends git vim build-essential cmake wget openssh-client mpich libmpich-dev curl libpython3.10-dev
+   &&  apt-get clean
+   &&  rm -rf /var/lib/apt/lists/*
+ENV BELLE2_EXEC=/cvmfs/belle.kek.jp/grid/diracos2/2.42/Linux-x86_64/diracos/bin
+ENV CEPH_URL=root://ceph-node-j.etp.kit.edu
+ENV EOS_MGM_URL=root://eosuser.cern.ch
+ENV DEBIAN_FRONTEND=noninteractive
+ENV X509_CERT_DIR=/cvmfs/grid.cern.ch/etc/grid-security/certificates
+ENV X509_VOMS_DIR=/cvmfs/grid.cern.ch/etc/grid-security/vomsdir
+ENV X509_VOMSES=/cvmfs/grid.cern.ch/etc/grid-security/vomses
+RUN apt-get update
+   &&  apt-get install -y --no-install-recommends krb5-user krb5-config xrootd-client xrootd-server
+   &&  apt-get clean
+   &&  rm -rf /var/lib/apt/lists/*
+RUN pip install mpi4py
+RUN pip install pandas numpy packaging typing pillow tqdm pyparsing mplhep matplotlib scipy scikit-learn torch torchvision torchaudio pathlib h5py
+RUN pip install --upgrade "jax[cuda12]" jaxopt optax
+RUN pip install datetime loguru tqdm awkward gpustat
+ENV CUPY_CACHE_DIR=/tmp/cupy_cache
+RUN pip install wandb hydra-core

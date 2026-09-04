@@ -1,0 +1,42 @@
+## Executable that will be run in job (has to be executable)
+Executable = ./executable.sh
+
+## Output/Error/Log files 
+Output = logs/outputs/out$(ClusterId).$(ProcId).txt
+Error = logs/errors/err$(ClusterId).$(ProcId).txt
+Log = logs/logs/log$(ClusterId).$(ProcId).txt
+## Should the Output/Error be streamed
+stream_output = True
+stream_error = True
+arguments = $(trash) $(qubit)
+
+transfer_input_files = qae_hep.tar.gz,/tmp/x509up_u12028
+
+## Requested parameters
++RequestWalltime = 400000  
+RequestCPUs = 1
+# RAM (in MB)
+RequestMemory = 16000
+#  scratch space (in kB)
+request_disk = 16000000
+#require_gpus = (GlobalMemoryMB >= 11000)
+request_GPUs = 1
+#request_GPUsMemory = 32000
+requirements = regexp("A100|V100", TARGET.GPUs_DeviceName)
+# Only available on TOpAS -> remote job
++RemoteJob = True
+use_x509userproxy = True
+x509userproxy = /tmp/x509up_u12028
+
+accounting_group = cms.higgs
+
+# Allows for the usage of node running on renewable energy - this has 8x A100 GPUs
+#+evictable = True 
+
+Universe = docker
+docker_image = neutrinoman4/qml-lightning.gpu:v4.0
+
+## Copy local variables to job
+getenv = USE_USER
+
+queue trash, qubit from qubits.txt

@@ -1,0 +1,30 @@
+## Executable that will be run in job (has to be executable)
+Executable = ./executable.sh
+
+## Output/Error/Log files 
+Output = logs/outputs/out$(ClusterId).$(ProcId).txt
+Error = logs/errors/err$(ClusterId).$(ProcId).txt
+Log = logs/logs/log$(ClusterId).$(ProcId).txt
+## Should the Output/Error be streamed
+stream_output = True
+stream_error = True
+
+# place your github code in the (sub)folder qae_hep
+transfer_input_files = qae_hep.tar.gz
+
+## Requested parameters
++RequestWalltime = 500000  
+RequestCPUs = 1
+# RAM (in MB)
+RequestMemory = 16000
+#  scratch space (in kB)
+request_disk = 16000000
+#require_gpus = (GlobalMemoryMB >= 11000)
+request_GPUs = 1
+# Request V100 GPU, or whichever one you need
+requirements = regexp("V100", TARGET.GPUs_DeviceName)
+
+Universe = docker
+docker_image = neutrinoman4/qml-lightning.gpu:v5.0
+
+Queue 1
