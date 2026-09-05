@@ -18,7 +18,7 @@ from loguru import logger
 import wandb
 
 
-@hydra.main(config_path="./hydra_configs/VQC", config_name="config")
+@hydra.main(config_path="./hydra_configs/VQC", config_name="base")
 def main(cfg: DictConfig):
     # Set up directories
     base_dir: str = cfg.base_dir
