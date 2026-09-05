@@ -2,6 +2,11 @@
 *.DS_Store
 ._*
 
+# local-only design/tracking docs -- not published to the repo
+REFACTOR.md
+refactored.MD
+problems.MD
+
 # secrets / local-only
 .env
 .Xauthority
