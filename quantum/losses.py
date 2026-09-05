@@ -32,7 +32,7 @@ def batch_semi_classical_cost(weights,inputs=None,quantum_circuit=None,return_fi
     return batched_average_cost
 
 def VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=False,loss_type='MSE',reg=1.):
-    bias=np.sum(weights[-6:-1])
+    bias=weights.aux['bias']
     exp_vals=np.array(quantum_circuit(weights,inputs),requires_grad=True) # n_qubits x batch_size
     if loss_type=='BCE':
         score=exp_vals + bias
@@ -49,7 +49,7 @@ def VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=
     return np.array(loss_fn,requires_grad=True)
 
 def batched_VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=False,loss_type='MSE',reg=1.):
-    bias=np.sum(weights[-6:-1])
+    bias=weights.aux['bias']
     #k1=weights[-3]
     #k2=weights[-3]
     loss_fn=[]
