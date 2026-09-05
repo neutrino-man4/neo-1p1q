@@ -17,13 +17,12 @@ separate_ancilla: true
 resume: false
 desc: 'Jetclass dataset, Using arbitrary 3D rotations, no reuploading,separate ancilla, pt normalized to jet pt, qcd sample flattened using jet pt'
 norm_pt: true
-dataset: 'jetclass'
 substructure: false 
 PFCand_selection_type: 'random' # this argument is only relevant if substructure = true
 use_reuploading: false
 loss: 'semiclassical'
 save_dir: '/work/abal/qae_hep/saved_models/'
-data_dir: '/ceph/abal/QML/JetClass/'
+data_dir: '/ceph/abal/JetClass/'
 dump: '/ceph/abal/QML/JetClass/dumps/' # only for testing
 read_n: 2000 # only for testing
 load: false # only for testing

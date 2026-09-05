@@ -1,8 +1,8 @@
 seed: 'base'
 base_dir: '/work/abal/qae_hep/'
 train: true
-dataset: 'delphes'
 wires: 4
+num_layers: 1
 ancilla: False
 trash_qubits: 3
 shots: 2500
@@ -25,10 +25,10 @@ norm_pt: false
 substructure: false
 patience: 2
 use_reuploading: false
-loss: 'semiclassical'
+loss: 'MSE'
 save_dir: '/work/abal/qae_hep/saved_models/'
-data_dir: '/storage/9/abal/CASE/delphes/'
-dump: '/ceph/abal/QML/delphes/dumps/' # only for testing
+data_dir: '/ceph/abal/JetClass/'
+dump: '/ceph/abal/QML/JetClass/dumps/' # only for testing
 read_n: 2000 # only for testing
 load: false # only for testing
 scheme: 'min' # only for testing
