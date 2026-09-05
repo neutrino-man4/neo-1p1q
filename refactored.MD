@@ -270,3 +270,76 @@ bug introduced by this refactor — the old code was never runnable at other qub
 measurement.
 
 **Verified:** both tests pass. This is the actual safety net gating D9 (not just code inspection).
+
+## D9 — Switchover
+
+**Commits:** `75f359e` (`architectures.py`), `81aa732` (`losses.py`), `08a2385` (`train.py`),
+`00f73ed` (dead config field), `9a8870c` (parity test). **Files:** `quantum/architectures.py`,
+`quantum/losses.py`, `train.py`, `hydra_configs/*/base.yaml`, `tests/test_circuit_parity.py`.
+
+**`quantum/architectures.py`:**
+- Deleted `_vqc_circuit`, `_vqc_state_circuit`, `_qcnn_implementation`, `_qcnn_state_circuit`, and
+  the module-level `sigmoid()` helper they were the only callers of.
+- `set_circuit()` now builds from the registry:
+  ```python
+  def set_circuit(self, circuit_type: str = 'normal', operations_per_qubit: Optional[int] = None) -> None:
+      self._impl = registry.get(circuit_type, self.num_layers)
+      if operations_per_qubit is not None:
+          self._impl.operations_per_qubit = operations_per_qubit
+      self.circuit = qml.QNode(
+          lambda weights, inputs: self._impl.build(weights, inputs, self.auto_wires),
+          self.device,
+          interface=self.backend
+      )
+      self.state_circuit_qnode = qml.QNode(self._state_build, self.device, interface=self.backend)
+  ```
+  `circuit_type='CNN'` now raises `ValueError` from the registry (confirmed) — QCNN is fully gone,
+  not just unmigrated. The `qml.defer_measurements` wrapper the old VQC state-circuit path used is
+  dropped: D8's own passing test already proved `_state_build` (built without that wrapper) matches
+  the wrapped legacy output bit-for-bit, so it was vestigial for this circuit.
+- `QuantumTrainer.iteration()`'s training branch now uses D7's confirmed multi-arg optimizer
+  pattern for real: `rot` and each named `aux` value are passed to `step_and_cost` as separate
+  trainable arguments (via a small `cost_fn` closure that repacks them into a `CircuitWeights` for
+  the actual loss function), and the returned tuple is repacked back into `self.current_weights`.
+  The validation branch (`train=False`) was left untouched — it already worked with a single
+  `CircuitWeights` argument once `losses.py` read `weights.aux['bias']`.
+
+**`quantum/losses.py`:** `VQC_cost` and `batched_VQC_cost` (`probabilistic_loss` never read a bias)
+now read `weights.aux['bias']` instead of `sum(weights[-6:-1])`.
+
+**`train.py`:** `VQC.set_circuit(...)` now passes `operations_per_qubit=cfg.operations_per_qubit`.
+Weight construction replaced with:
+```python
+shape = VQC._impl.rotation_shape(len(VQC.auto_wires), cfg.num_layers)
+rot = np.array(np.random.uniform(0, np.pi, size=(shape.L, shape.N, shape.R)), requires_grad=True)
+aux = {**VQC._impl.aux_defaults, **dict(cfg.get('aux_weights', {}))}
+aux = {k: np.array(v, requires_grad=True) for k, v in aux.items()}
+init_weights = CircuitWeights(rot=rot, aux=aux)
+```
+The `cfg.extra_weights > 8` sanity check and `NUM_WEIGHTS`/`init_weights[-cfg.extra_weights:-1]`
+block are gone. The now-unconsumed `extra_weights: null` field was also removed from all six
+`hydra_configs/*/base.yaml` files.
+
+**`tests/test_circuit_parity.py`:** repurposed (see the test file's own docstring) — it compared
+against the now-deleted `_vqc_circuit`/`_vqc_state_circuit` methods, so it now checks
+`set_circuit()`'s wiring against a standalone `VQCCircuit` instead. The original old-vs-new
+comparison's passing result is preserved above under D8.
+
+**Verified:**
+- All three tests pass (`test_circuit_parity.py` x2, `test_circuit_weights_checkpoint.py`).
+- `quantum.architectures`, `quantum.losses`, `train.py`, `evaluate.py` all compile.
+- A full `set_circuit` → `CircuitWeights` construction → one training `iteration()` → one
+  validation `iteration()` round trip runs end to end (batch_size=1, matching `evaluate.py`'s own
+  documented constraint) with real values, confirming `aux` values actually update after a step.
+- `circuit_type='CNN'` now raises `ValueError: Unknown circuit_type 'CNN'. Registered: ['normal']`.
+- `train.py` still fails at exactly the pre-existing, already-flagged `config_name="config"` bug —
+  nothing new broken.
+- `evaluate.py --cfg job` resolves cleanly: `operations_per_qubit`, `aux_weights`, `circuit_type`
+  present and correct; no `extra_weights` key remains anywhere in the resolved config.
+
+**Found while verifying, not fixed (out of D9's scope) — see `REFACTOR.md` D12:**
+`quantum_fisher`/`run_fisher_computation` still assume a flat weight vector and pass
+`self.current_weights` to PennyLane's `metric_tensor` as a single differentiable argument;
+confirmed by direct test to raise `AttributeError` against a real `CircuitWeights`. Also noted
+there: `QuantumTrainer.iteration()`'s validation branch only works at `batch_size=1` — pre-existing,
+untouched by this change.

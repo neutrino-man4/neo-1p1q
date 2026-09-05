@@ -3,8 +3,8 @@
 Companion to `AUDIT.md`, section 3.2 ("modular, plug-and-play circuit design"). Part A is
 background for the design. Part B covers the remaining deliverables, ordered by dependency.
 
-**Status:** D1, D2, D4, D5, D6, D7, D8 are implemented — see `refactored.MD`. This file covers
-what's left: D9, D10, and D11 (proposed, not yet decided).
+**Status:** D1, D2, D4, D5, D6, D7, D8, D9 are implemented — see `refactored.MD`. This file
+covers what's left: D10, and D11 (proposed, not yet decided).
 
 **Scope of this pass: VQC only.** QCNN (`_qcnn_implementation`/`_qcnn_state_circuit`,
 `circuit_type='CNN'`) is removed from the live code as part of D9, not merely left unmigrated.
@@ -75,51 +75,14 @@ trainable arguments in one `step_and_cost` call.
 
 ## Part B — Remaining deliverables
 
-D1, D2, D4, D5, D6, D7, D8 are done (`refactored.MD`). D9 is now unblocked — every dependency is
-complete. D10 needs D9. D11 is a proposed addendum, independent of the others, not yet decided.
+D1, D2, D4, D5, D6, D7, D8, D9 are done (`refactored.MD`). D10 needs D9 (done — unblocked). D11 and
+D12 are proposed addenda, independent of the others, not yet decided.
 
 ```
-D9 (switchover) ─▶ D10 (e2e run)
+D10 (e2e run)
 D11 (loss registry, proposed/optional, independent)
+D12 (QFI/CircuitWeights compatibility, proposed, independent)
 ```
-
-### D9 — Switchover
-
-**Depends on:** D6, D7, D8 (all done). **Files:** `quantum/architectures.py`, `train.py`,
-`quantum/losses.py`.
-
-1. `QuantumClassifier.set_circuit()`:
-   ```python
-   def set_circuit(self, circuit_type: str = 'normal') -> None:
-       self._impl = circuits.registry.get(circuit_type, self.num_layers)
-       self._impl.operations_per_qubit = cfg.get('operations_per_qubit', self._impl.operations_per_qubit)
-       self.circuit = qml.QNode(self._impl.build, self.device, interface=self.backend)
-       self.state_circuit_qnode = qml.QNode(self._state_build, self.device, interface=self.backend)
-   ```
-2. Delete `_vqc_circuit`, `_vqc_state_circuit`, `_qcnn_implementation`, `_qcnn_state_circuit` — all
-   four, not just the VQC pair. QCNN is out of scope for this version (see the note at the top of
-   this document).
-3. `train.py` weight construction — replace `NUM_WEIGHTS = ... + cfg.extra_weights` and
-   `init_weights[-cfg.extra_weights:-1] = 0.1` with:
-   ```python
-   shape = VQC._impl.rotation_shape(len(VQC.auto_wires), cfg.num_layers)
-   rot = np.random.uniform(0, np.pi, size=(shape.L, shape.N, shape.R))
-   aux = {**VQC._impl.aux_defaults, **dict(cfg.get('aux_weights', {}))}
-   init_weights = CircuitWeights(rot=rot, aux=aux)
-   ```
-   Drop `cfg.extra_weights` and `train.py:109-121` entirely.
-4. `quantum/losses.py`: `VQC_cost`/`probabilistic_loss` read `weights.aux['bias']` instead of
-   `sum(weights[-6:-1])`.
-5. **New finding (surfaced while implementing D7):** `QuantumTrainer.iteration()` still calls
-   `self.optim.step_and_cost(self.quantum_loss, self.current_weights, ...)` with one flat trainable
-   argument. This must become the multi-arg form confirmed working in D7 —
-   `step_and_cost(cost_fn, rot, *aux.values())` — with the returned tuple repacked into a
-   `CircuitWeights` after every step. This wasn't listed in the original D9 scope; it depends on
-   step 4 above (`losses.py` must accept `CircuitWeights`-shaped args first).
-
-**Done when:** D8's parity test still passes with the registry-based circuit wired in for real
-(not just called standalone), and no references to the deleted methods, `circuit_type='CNN'`, or
-`cfg.extra_weights` remain.
 
 ### D10 — End-to-end validation run
 
@@ -130,7 +93,7 @@ Re-run one short training job (a handful of epochs, small config) end to end.
 **Done when:** the loss curve and checkpoint format match a pre-refactor run of the same config
 (checkpoint content adjusted for `CircuitWeights` serialization, per D7).
 
-### D11 — Loss function registry *(proposed, not yet decided: fold into D9 or keep standalone)*
+### D11 — Loss function registry *(proposed, not yet decided)*
 
 **Depends on:** nothing. **Files:** `quantum/losses.py`.
 
@@ -149,3 +112,29 @@ loss becomes "write the function, add one dict entry" — no existing cost funct
 **Done when:** `VQC_cost`, `batched_VQC_cost`, and `probabilistic_loss` all resolve their scoring
 function through one shared lookup; an unknown `loss_type` raises `ValueError` (listing valid
 names) instead of calling `sys.exit`.
+
+### D12 — QFI/CircuitWeights compatibility *(proposed, not yet decided)*
+
+**Depends on:** nothing. **Files:** `quantum/architectures.py` (`quantum_fisher`,
+`run_fisher_computation`).
+
+**New finding (surfaced while verifying D9):** these two methods still assume a flat weight
+vector — `quantum_fisher` slices `full_qfi[:3*N*self.num_layers, :3*N*self.num_layers]` and hands
+`self.current_weights` to `qml.metric_tensor`/`qml.adjoint_metric_tensor` as one differentiable
+argument. Confirmed broken by direct test: calling `quantum_fisher` with a real `CircuitWeights`
+raises `AttributeError: 'ArrayBox' object has no attribute 'item'` inside PennyLane's own
+differentiation machinery. Out of D9's declared scope (not listed in its file list), so left
+unfixed; fixing it needs the same multi-arg differentiation pattern D7 confirmed for the optimizer
+(`rot` plus named aux values passed as separate args to `metric_tensor`), and the `3*N*num_layers`
+slice replaced with a direct `rotation_shape`-derived size.
+
+**Also found, not fixed (pre-existing, unrelated to D9):** `QuantumTrainer.iteration()`'s
+validation branch (`train=False`) does `float(scores)`, which only works when `scores` is a single
+value — i.e. `batch_size=1`. Confirmed this line is untouched by any D9 change. Matches
+`evaluate.py`'s own documented constraint ("`run_inference` expects `batch_size=1`"), but
+`run_training_loop`'s validation phase calls the same code path with `cfg.batch_size` (100 by
+default in `VQC/base.yaml`) — would already have failed there before this refactor. Not part of
+D12; noted here since it surfaced during the same verification pass.
+
+**Done when:** `quantum_fisher`/`run_fisher_computation` run against a `CircuitWeights` instance
+without error and reproduce the pre-refactor QFI matrix for an equivalent flat-weight input.
