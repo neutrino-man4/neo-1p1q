@@ -143,7 +143,7 @@ class CASEJetClassDataset(IterableDataset):
         if count < n_target:
             self._log(f"WARNING: requested {n_target} '{name}' jets but only {count} were available")
         data = np.concatenate(chunks, axis=0) if chunks else np.empty((0, self.n_qubits, 3))
-        return data, nnp.full(len(data), label, dtype=nnp.integer)
+        return data, nnp.full(len(data), label, dtype=int)
 
     def _materialise(self) -> Tuple[np.ndarray, np.ndarray]:
         """Read both classes, concatenate, shuffle, and log the resulting split."""
@@ -171,7 +171,7 @@ class CASEJetClassDataset(IterableDataset):
         for i in range(0, len(self._data), self.batch_size):
             batch_data = torch.from_numpy(nnp.asarray(self._data[i:i + self.batch_size])).float()
             batch_labels = self._labels[i:i + self.batch_size]
-            yield np.array(batch_data, requires_grad=False), np.array(batch_labels, dtype=np.integer, requires_grad=False)
+            yield np.array(batch_data, requires_grad=False), np.array(batch_labels, dtype=int, requires_grad=False)
 
 
 def OneP1QDataLoader(input_shape:tuple[int]=(100, 3),train:bool=True,**kwargs) -> DataLoader:
