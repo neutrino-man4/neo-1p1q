@@ -106,9 +106,12 @@ class CASEJetClassDataset(IterableDataset):
         """
         Load one .h5 file and return its preprocessed jets.
 
-        Keeps the `n_qubits` hardest particles per jet (by pt), then rescales
-        pt/eta/phi -- either dividing pt by jet pt (`normalize_pt`) or applying
-        the fixed rescaling from helpers.utils.
+        Keeps the `n_qubits` hardest particles per jet, then rescales pt/eta/phi
+        -- either dividing pt by jet pt (`normalize_pt`) or applying the fixed
+        rescaling from helpers.utils. JetClass stores constituents already in
+        descending-pt order, so the hardest particles are just the leading slice;
+        this is asserted so a non-sorted file fails loudly instead of silently
+        feeding the wrong particles.
 
         Returns:
             np.ndarray: shape (M, n_qubits, 3).
@@ -116,8 +119,12 @@ class CASEJetClassDataset(IterableDataset):
         with h5py.File(file_path, 'r') as file:
             jet_pt = np.array(file[self.feature_key])[:, self.jpt_index]
             jet_etaphipt = np.array(file[self.data_key][()])
-        sorted_indices = np.argsort(-jet_etaphipt[..., self.pt_index], axis=-1)
-        jet_etaphipt = np.take_along_axis(jet_etaphipt, sorted_indices[..., None], axis=1)
+        pt_col = jet_etaphipt[..., self.pt_index]
+        if not nnp.all(nnp.diff(pt_col, axis=-1) <= 1.0e-6):
+            raise ValueError(
+                f"{file_path}: constituents are not in descending-pt order; "
+                f"the leading-slice selection assumes they are"
+            )
         jet_etaphipt = jet_etaphipt[:, :self.n_qubits, :]
 
         if self.normalize_pt:
