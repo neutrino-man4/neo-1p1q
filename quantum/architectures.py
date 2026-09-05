@@ -43,7 +43,7 @@ class QuantumClassifier:
         use_ancilla: bool = False,
         backend_name: str = 'autograd',
         test: bool = False,
-        fisher_computation: bool = False,approx=None,**kwargs: Any
+        **kwargs: Any
     ) -> None:
         # Circuit configuration
         self.n_qubits = wires
@@ -52,10 +52,8 @@ class QuantumClassifier:
         self.backend = backend_name
         self.n_trash_qubits = -1
         self.separate_ancilla = False
-        self.aux_wire=None
-        self.approx=approx
         # Initialize wire configurations
-        self._initialize_wires(fisher_computation=fisher_computation)
+        self._initialize_wires()
         
         # Set up device
         self.device = self._set_device(shots=shots, device_name=dev_name)
@@ -63,7 +61,6 @@ class QuantumClassifier:
         # Circuit and weights
         self._impl: Optional[Circuit] = None
         self.circuit: Optional[qml.QNode] = None
-        self.state_circuit_qnode: Optional[qml.QNode] = None
         self.current_weights: Optional[CircuitWeights] = None
         
         # Data indices for particle properties
@@ -82,22 +79,19 @@ class QuantumClassifier:
                 self.total_batches=100000
                 print("WARNING: total_batches not set, using default value of 100000")
     
-    def _initialize_wires(self,fisher_computation=False) -> None:
+    def _initialize_wires(self) -> None:
         """
         Initialize wire (qubit) indices and create necessary combinations.
         """
         total_qubits = self.n_qubits
-        
+
         if self.use_ancilla:
             total_qubits += 1
             self.truth_wire = total_qubits - 1  # Last wire is the truth wire
         else:
             self.truth_wire = None
-            
+
         self.all_wires = list(range(total_qubits))
-        if (fisher_computation) and (self.approx!= 'adjoint'):
-            self.all_wires = list(range(self.n_qubits+1))
-            self.aux_wire = self.all_wires[-1]
         self.auto_wires = list(range(self.n_qubits))
         self.two_comb_wires = list(combinations(range(self.n_qubits), 2))
     
@@ -137,31 +131,6 @@ class QuantumClassifier:
         print("LETS GOOOOOOOOOOOOO")
         time.sleep(1)
     
-    def _state_build(
-        self,
-        weights: CircuitWeights,
-        inputs: Optional[np.ndarray] = None,
-        wires: Optional[List[int]] = None,
-    ) -> Any:
-        """
-        State version of a registry circuit, derived generically for QFI.
-
-        Replaces the hand-duplicated *_state_circuit methods above: any
-        Circuit's build() already ends with exactly one measure() call, so
-        swapping that call for qml.state() via measure_override gives the
-        state version for free. Not yet wired into set_circuit() -- see D9.
-
-        Args:
-            weights: rotation tensor + named aux weights for self._impl.
-            inputs: input data to be encoded in the circuit.
-            wires: wires to build the circuit over (defaults to self.auto_wires).
-
-        Returns:
-            Full quantum state vector.
-        """
-        wires = wires if wires is not None else self.auto_wires
-        return self._impl.build(weights, inputs, wires, measure_override=lambda *_: qml.state())
-
     def set_circuit(self, circuit_type: str = 'normal', operations_per_qubit: Optional[int] = None) -> None:
         """
         Configure the QNode circuit from the circuit registry.
@@ -179,131 +148,17 @@ class QuantumClassifier:
             self.device,
             interface=self.backend
         )
-        self.state_circuit_qnode = qml.QNode(self._state_build, self.device, interface=self.backend)
-    
+
     def fetch_circuit(self) -> qml.QNode:
         """
         Get the quantum circuit for inference or training.
-        
+
         Returns:
             Configured quantum node (QNode) circuit
         """
         if self.circuit is None:
             self.set_circuit()
         return self.circuit
-    
-    def state_circuit(
-        self,
-        weights: np.ndarray,
-        inputs: np.ndarray
-    ) -> np.ndarray:
-        """
-        Get the quantum state from the circuit for a specific input.
-        
-        Args:
-            weights: Circuit parameters
-            inputs: Input data for a single sample (shape: (1, n_qubits, 3))
-        
-        Returns:
-            Quantum state vector
-        """
-        if self.state_circuit_qnode is None:
-            self.set_circuit()
-        
-        # Ensure inputs are in the right shape for a single sample
-        if inputs.ndim == 2:
-            inputs = inputs[np.newaxis, ...]  # Add batch dimension
-        
-        return self.state_circuit_qnode(weights, inputs)
-    
-    def quantum_fisher(
-        self,
-        input_point: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Calculate the Quantum Fisher Information Matrix for a specific input point.
-        Returns only the 3N x 3N submatrix for rotation parameters, reordered by qubit.
-        
-        Args:
-            input_point: Single input data point (shape: (n_qubits, 3))
-        
-        Returns:
-            Quantum Fisher Information Matrix (shape: (3N, 3N)) where N = n_qubits
-            Ordered as [Y0,Z0,X0, Y1,Z1,X1, ..., YN-1,ZN-1,XN-1] for each qubit
-        """
-        if self.state_circuit_qnode is None:
-            self.set_circuit()
-        
-        # Ensure input_point is in the right shape
-        if input_point.ndim == 2:
-            #print("WARNING: input_point is 2D, reshaping to (1, n_qubits, 3) by adding a batch dimension")
-            input_point = input_point[np.newaxis, ...]  # Add batch dimension: (1, n_qubits, 3)
-        elif input_point.ndim == 1:
-            # If it's flattened, reshape it
-            #print("WARNING: input_point is 1D, reshaping to (1, n_qubits, 3)")
-            input_point = input_point.reshape(1, len(self.auto_wires), 3)
-        
-        # Get full QFI matrix
-        if self.approx=='adjoint':
-            metric_fn = lambda w: qml.adjoint_metric_tensor(self.state_circuit_qnode)(w, input_point)    
-        else:
-            metric_fn = lambda w: qml.metric_tensor(self.state_circuit_qnode,hybrid=True,aux_wire=self.aux_wire,approx=self.approx)(w, input_point)
-        full_qfi=metric_fn(self.current_weights)
-        N = len(self.auto_wires)
-        # Extract only the 3N x 3N submatrix (rotation parameters only, fuck you bias)
-        #import pdb;pdb.set_trace()
-        rotation_qfi = full_qfi[:3*N*self.num_layers, :3*N*self.num_layers]
-        
-        # the order we deserve: [X0, X1, ..., XN-1, Y0, Y1, ..., YN-1, Z0, Z1, ..., ZN-1]
-        # the order we need: [Y0, Z0, X0, Y1, Z1, X1, ..., YN-1, ZN-1, XN-1]
-        # reorder_indices = []
-        # for i in range(N):
-        #     reorder_indices.extend([
-        #         N + i,      # Y rotation for qubit i (old index N+i -> new index 3i)
-        #         2*N + i,    # Z rotation for qubit i (old index 2N+i -> new index 3i+1) 
-        #         i           # X rotation for qubit i (old index i -> new index 3i+2)
-        #     ])
-        
-        # # Reorder both rows and columns
-        # reordered_qfi = rotation_qfi[np.ix_(reorder_indices, reorder_indices)]
-        
-        return rotation_qfi#reordered_qfi
-        
-    def run_fisher_computation(
-        self,
-        dataloader: DataLoader,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Compute Fisher Information Matrix for each input point in the dataloader.
-        
-        Args:
-            dataloader: DataLoader containing input data and labels (batch_size=1)
-            
-        Returns:
-            Tuple of (fisher_matrices, labels) where:
-            - fisher_matrices: (N, Np, Np) array of Fisher Information Matrices
-            - labels: (N,) array of truth labels
-        """
-        fisher_matrices = []
-        all_labels = []
-        
-        for batch_inputs, batch_labels in tqdm(dataloader, desc="Computing Fisher Information",total=self.total_batches):
-            # batch_inputs.shape = (1, n_qubits, 3)
-            # batch_labels.shape = (1,)
-            
-            # Remove batch dimension for quantum_fisher input
-            input_point = batch_inputs[0]  # Shape: (n_qubits, 3)
-            
-            # Compute QFI for this specific input point
-            qfi = self.quantum_fisher(input_point)
-            fisher_matrices.append(qfi)
-            all_labels.append(batch_labels[0])  # Extract single label
-        
-        # Convert to numpy arrays
-        fisher_matrices = np.array(fisher_matrices)  # Shape: (N, Np, Np)
-        all_labels = np.array(all_labels)            # Shape: (N,)
-        
-        return fisher_matrices, all_labels
 
     def fetch_backend(self) -> str:
         """
