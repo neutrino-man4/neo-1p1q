@@ -11,7 +11,6 @@ import pennylane.numpy as np
 import pennylane as qml
 import helpers.utils as ut
 import case_reader as cr
-import helpers.path_setter as ps
 import quantum.losses as loss
 from quantum.circuits.base import CircuitWeights
 from loguru import logger
@@ -114,8 +113,8 @@ def main(cfg: DictConfig):
         aux = {k: np.array(v, requires_grad=True) for k, v in aux.items()}
         init_weights = CircuitWeights(rot=rot, aux=aux)
 
-    train_max_n = cfg.train_n
-    valid_max_n = cfg.valid_n
+    train_max_n = cfg.n_signal + cfg.n_background
+    valid_max_n = cfg.n_signal_val + cfg.n_background_val
     
     # Print training parameters using the VQC instance method
     VQC.print_training_params()
@@ -125,42 +124,41 @@ def main(cfg: DictConfig):
     with open(os.path.join(save_dir, 'args.txt'), 'w+') as f:
         f.write(repr(cfg))
 
-    # Load the data and create a dataloader
-    data_key = 'VQC_train'
-    val_key = 'VQC_val'
-    
-    logger.info(f'loading data from {ps.PathSetter(data_path=cfg.data_dir).get_data_path(data_key)}')
-    # JetClass files sit one level down per sample type (<split>/<sample>/<sample>_NNN.h5);
-    # sorting by the trailing file number interleaves sample types instead of grouping them.
-    _by_file_number = lambda p: os.path.basename(p).rsplit('_', 1)[-1]
-    train_filelist = sorted(glob.glob(os.path.join(ps.PathSetter(data_path=cfg.data_dir).get_data_path(data_key), '**', '*.h5'), recursive=True), key=_by_file_number)
-    val_filelist = sorted(glob.glob(os.path.join(ps.PathSetter(data_path=cfg.data_dir).get_data_path(val_key), '**', '*.h5'), recursive=True), key=_by_file_number)
+    # Load the data: balanced signal vs background, per the config keys.
+    # JetClass layout is <data_dir>/<split>/<sample>/<sample>_NNN.h5.
+    train_split = 'flat_train' if cfg.flat else 'train'
+    val_split = 'flat_val' if cfg.flat else 'val'
+    _class_files = lambda split, sample: sorted(glob.glob(os.path.join(cfg.data_dir, split, sample, '*.h5')))
+    train_sig, train_bg = _class_files(train_split, cfg.signal), _class_files(train_split, cfg.background)
+    val_sig, val_bg = _class_files(val_split, cfg.signal), _class_files(val_split, cfg.background)
     num_particles = getattr(cfg, 'num_particles', len(VQC.auto_wires))
-    logger.info(f"Number of particles to load: {num_particles}") 
-    
-    if (len(train_filelist) == 0) or (len(val_filelist) == 0):
-        raise FileNotFoundError(f"Could not find files in {ps.PathSetter(data_path=cfg.data_dir).get_data_path(data_key)} or {ps.PathSetter(data_path=cfg.data_dir).get_data_path(val_key)}")
+    logger.info(f"Number of particles to load: {num_particles}")
 
-    logger.info(f"Training on {len(train_filelist)} files found at {ps.PathSetter(data_path=cfg.data_dir).get_data_path(data_key)}")
-    logger.info(f"Validating on {len(val_filelist)} files found at {ps.PathSetter(data_path=cfg.data_dir).get_data_path(val_key)}")
+    if not (train_sig and train_bg and val_sig and val_bg):
+        raise FileNotFoundError(
+            f"Missing JetClass files under {cfg.data_dir} for signal='{cfg.signal}', "
+            f"background='{cfg.background}' (splits '{train_split}', '{val_split}')"
+        )
+    logger.info(f"Training set: {cfg.n_signal} '{cfg.signal}' + {cfg.n_background} '{cfg.background}' jets from {train_split}/")
+    logger.info(f"Validation set: {cfg.n_signal_val} '{cfg.signal}' + {cfg.n_background_val} '{cfg.background}' jets from {val_split}/")
 
-    # Use VQC.auto_wires instead of qc.auto_wires
     train_loader = cr.OneP1QDataLoader(
-        filelist=train_filelist, 
-        batch_size=cfg.batch_size, 
-        input_shape=(num_particles, 3), 
+        signal_filelist=train_sig, background_filelist=train_bg,
+        n_signal=cfg.n_signal, n_background=cfg.n_background,
+        batch_size=cfg.batch_size,
+        input_shape=(num_particles, 3),
         train=True,
-        max_samples=train_max_n,
         normalize_pt=cfg.norm_pt,
         logger=logger,
     )
     val_loader = cr.OneP1QDataLoader(
-        filelist=val_filelist,
+        signal_filelist=val_sig, background_filelist=val_bg,
+        n_signal=cfg.n_signal_val, n_background=cfg.n_background_val,
         batch_size=cfg.batch_size,
         input_shape=(num_particles, 3),
         train=False,
-        max_samples=valid_max_n,
         normalize_pt=cfg.norm_pt,
+        logger=logger,
     )
 
     # Initialize the optimizer
