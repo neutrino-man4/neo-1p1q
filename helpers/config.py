@@ -10,10 +10,13 @@ Author: Aritra Bal (ETP)
 2026-09-05
 """
 import argparse
+import os
 
 from omegaconf import DictConfig, OmegaConf
 
-DEFAULT_CONFIG = "configs/VQC/base.yaml"
+# Anchored to the repo root (parent of helpers/) so it resolves regardless of cwd.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "configs", "VQC", "base.yaml")
 
 
 def load_config(default_config: str = DEFAULT_CONFIG) -> DictConfig:

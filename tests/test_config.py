@@ -16,7 +16,7 @@ from omegaconf import OmegaConf
 
 from helpers.config import DEFAULT_CONFIG, load_config, save_config
 
-_BASE = os.path.join(os.path.dirname(__file__), os.pardir, DEFAULT_CONFIG)
+_BASE = DEFAULT_CONFIG
 
 
 class TestLoadConfig(unittest.TestCase):
