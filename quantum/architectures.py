@@ -95,7 +95,7 @@ class QuantumClassifier:
         self.auto_wires = list(range(self.n_qubits))
         self.two_comb_wires = list(combinations(range(self.n_qubits), 2))
     
-    def _set_device(self, shots: int, device_name: str) -> qml.Device:
+    def _set_device(self, shots: int, device_name: str) -> "qml.devices.Device":
         """
         Set up the quantum device for simulation/execution.
         
