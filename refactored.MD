@@ -179,3 +179,94 @@ fields are meant to supply work end to end.
 `@hydra.main(config_path="./hydra_configs/VQC", config_name="config")` references a `config.yaml`
 that has never existed in this repo (only `base.yaml`) — `python train.py` currently fails at
 startup. Recorded in `AUDIT.md` section 2; not part of this refactor.
+
+## D6 — QFI state-circuit derivation
+
+**Commit:** `c5f43c6`. **File:** `quantum/architectures.py` (additive: one new method).
+
+```python
+def _state_build(
+    self,
+    weights: CircuitWeights,
+    inputs: Optional[np.ndarray] = None,
+    wires: Optional[List[int]] = None,
+) -> Any:
+    """State version of a registry circuit, derived generically for QFI."""
+    wires = wires if wires is not None else self.auto_wires
+    return self._impl.build(weights, inputs, wires, measure_override=lambda *_: qml.state())
+```
+
+Replaces the hand-duplicated `_vqc_state_circuit`/`_qcnn_state_circuit` pattern: any `Circuit`'s
+`build()` already ends with exactly one `measure()` call, so swapping that call for `qml.state()`
+via `measure_override` gives the state version for free. Not wired into `set_circuit()` yet — D9.
+
+**Verified:** matches `_vqc_state_circuit`'s output exactly (see D8's `test_state_matches`).
+
+## D7 — Trainer support for split weights
+
+**Commits:** `44b4551` (checkpoint round-trip test), `a89df22` (`load_weights` support). **Files:**
+`tests/test_circuit_weights_checkpoint.py`, `quantum/architectures.py` (`QuantumClassifier`).
+
+Two things needed confirming before D9 could safely restructure the trainer: whether PennyLane's
+optimizer accepts multiple trainable arguments at once (rather than one flat array), and whether a
+`CircuitWeights` instance survives a save/load round trip losslessly.
+
+**Optimizer spike (throwaway, not committed):** built a small `rot` array plus two named scalars,
+all `requires_grad=True`, and confirmed `qml.AdamOptimizer(0.1).step_and_cost(cost_fn, rot,
+scale_factor, bias)` returns and updates all three arguments correctly, against the pinned
+PennyLane 0.37.0 — `rot changed: True`, `scale_factor changed: True`, `bias changed: True`.
+
+**Checkpoint round trip (`tests/test_circuit_weights_checkpoint.py`):** a `CircuitWeights` with a
+trainable `rot` array and a trainable `aux` dict, pickled and unpickled via the same
+`helpers.utils.Pickle`/`Unpickle` functions `QuantumTrainer.save()` already uses — `rot` and every
+`aux` value compare equal after the round trip.
+
+**`QuantumClassifier.load_weights()`** — additive branch only:
+```python
+saved_weights = dictionary['weights']
+if isinstance(saved_weights, CircuitWeights):
+    self.current_weights = CircuitWeights(
+        rot=np.array(saved_weights.rot, requires_grad=train),
+        aux={k: np.array(v, requires_grad=train) for k, v in saved_weights.aux.items()},
+    )
+    return
+self.current_weights = np.array(saved_weights, requires_grad=train)
+# ... original flat-array path unchanged below
+```
+
+**Verified:** old-format flat-array checkpoints still load bit-identically (`requires_grad`
+preserved, same tensor type, `rearrange` path untouched); new-format `CircuitWeights` checkpoints
+load correctly (`rot` values match, `requires_grad` correctly re-enabled on `rot` and every `aux`
+value).
+
+**Scope note carried into D9:** `QuantumTrainer.iteration()`'s live optimizer call was
+deliberately left untouched here — it still passes one flat `current_weights` argument. Wiring the
+confirmed multi-arg pattern into the real training loop needs `losses.py` to accept
+`CircuitWeights` first, which is D9's job (see `REFACTOR.md`, D9 step 5).
+
+## D8 — Parity test
+
+**Commits:** `c5f43c6`'s test scaffolding is unrelated; test itself added alongside D6.
+**File:** `tests/test_circuit_parity.py` (plus empty `tests/__init__.py` so `unittest discover`
+can import the package).
+
+Two `unittest` cases, both run through a real `qml.QNode` against the same device/backend:
+
+- `test_expval_matches` — `VQCCircuit.build()` vs. today's `_vqc_circuit`, same converted weights,
+  same input, compared to 10 decimal places.
+- `test_state_matches` — `_state_build` (D6) vs. today's `_vqc_state_circuit`, full state vectors
+  compared with `atol=1e-10`.
+
+A helper, `_flat_to_circuit_weights`, converts one flat weight vector into the equivalent
+`CircuitWeights` by mirroring `_vqc_circuit`'s own slicing (`rot` from the leading
+`3*n_qubits*num_layers` entries reshaped to `(L, N, 3)`; `aux['scale_factor'] = flat[-1]`;
+`aux['hamiltonian_coeffs'] = flat[-11:-1]`), so both sides run on identical weight values.
+
+**Found and fixed during setup:** the test's `n_qubits` had to be fixed at exactly 10 — at any
+other qubit count, the *old* `_vqc_circuit`'s Hamiltonian measurement itself raises
+`ValueError: Could not create valid LinearCombination` (PennyLane), reproducing in a controlled
+test the fixed-10-Hamiltonian-coefficient issue already flagged in `AUDIT.md`/`REFACTOR.md`. Not a
+bug introduced by this refactor — the old code was never runnable at other qubit counts with this
+measurement.
+
+**Verified:** both tests pass. This is the actual safety net gating D9 (not just code inspection).
