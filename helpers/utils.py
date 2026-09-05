@@ -3,12 +3,10 @@ import numpy as nnp
 def getIndex(which:str='particle',feat:str=None)->int:
     if which=='particle':
         nameArray=particleFeatureNames
-    elif which=='event':
-        nameArray=eventFeatureNames
     elif which=='jet':
         nameArray=jetFeatureNames
     else:
-        print("arg which must be either event or particle. Returning -1 as index")
+        print("arg which must be either particle or jet. Returning -1 as index")
         return -1
     try:
         idx=nameArray.index(feat)
@@ -116,9 +114,6 @@ def folder_save(events,folder_name,save_path,append=False):
             print (item+".npy saved at ",os.getcwd(), "shape = ",events[item].shape)
     os.chdir(pwd)
     return
-
-eventFeatureNames:list[str]=['mJJ', 'j1Pt', 'j1Eta', 'j1Phi', 'j1M', 'j1E', 'j2Pt',
-       'j2M', 'j2E', 'DeltaEtaJJ', 'DeltaPhiJJ']
 
 particleFeatureNames:list[str]=['eta', 'phi', 'pt']
 
