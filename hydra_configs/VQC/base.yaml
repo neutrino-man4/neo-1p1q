@@ -6,8 +6,17 @@ num_layers: 1
 ancilla: False
 trash_qubits: 3
 shots: 2500
-train_n: 2000
-valid_n: 400
+# Binary classification: which JetClass sample dirs are signal (label 1) vs background (label 0),
+# and how many jets of each class to read for train / validation / test. The loader does equal
+# sampling per class and logs the final split.
+signal: 'TTBar_'
+background: 'ZJetsToNuNu'
+n_signal: 1000
+n_background: 1000
+n_signal_val: 200
+n_background_val: 200
+n_signal_test: 2000
+n_background_test: 2000
 batch_size: 100
 epochs: 25
 improv: 0.01
@@ -29,7 +38,6 @@ loss: 'MSE'
 save_dir: '/work/abal/qae_hep/saved_models/'
 data_dir: '/ceph/abal/JetClass/'
 dump: '/ceph/abal/QML/JetClass/dumps/' # only for testing
-read_n: 2000 # only for testing
 load: false # only for testing
 scheme: 'min' # only for testing
 log_wandb: false # only for testing
