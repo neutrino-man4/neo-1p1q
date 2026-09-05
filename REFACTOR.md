@@ -3,8 +3,8 @@
 Companion to `AUDIT.md`, section 3.2 ("modular, plug-and-play circuit design"). Part A is
 background for the design. Part B covers the remaining deliverables, ordered by dependency.
 
-**Status:** D1, D2, D4, D5, D6, D7, D8, D9 are implemented — see `refactored.MD`. This file
-covers what's left: D10, and D11 (proposed, not yet decided).
+**Status:** D1, D2, D4, D5, D6, D7, D8, D9, D11 are implemented — see `refactored.MD`. This file
+covers what's left: D10 and D12 (proposed, not yet decided).
 
 **Scope of this pass: VQC only.** QCNN (`_qcnn_implementation`/`_qcnn_state_circuit`,
 `circuit_type='CNN'`) is removed from the live code as part of D9, not merely left unmigrated.
@@ -75,12 +75,11 @@ trainable arguments in one `step_and_cost` call.
 
 ## Part B — Remaining deliverables
 
-D1, D2, D4, D5, D6, D7, D8, D9 are done (`refactored.MD`). D10 needs D9 (done — unblocked). D11 and
-D12 are proposed addenda, independent of the others, not yet decided.
+D1, D2, D4, D5, D6, D7, D8, D9, D11 are done (`refactored.MD`). D10 needs D9 (done — unblocked).
+D12 is a proposed addendum, independent of D10, not yet decided.
 
 ```
 D10 (e2e run)
-D11 (loss registry, proposed/optional, independent)
 D12 (QFI/CircuitWeights compatibility, proposed, independent)
 ```
 
@@ -92,26 +91,6 @@ Re-run one short training job (a handful of epochs, small config) end to end.
 
 **Done when:** the loss curve and checkpoint format match a pre-refactor run of the same config
 (checkpoint content adjusted for `CircuitWeights` serialization, per D7).
-
-### D11 — Loss function registry *(proposed, not yet decided)*
-
-**Depends on:** nothing. **Files:** `quantum/losses.py`.
-
-**New finding (surfaced while reviewing `losses.py` for D9):** `VQC_cost` and `batched_VQC_cost`
-each hardcode the same `if loss_type=='BCE': ... elif loss_type=='MSE': ... else: sys.exit(-1)` —
-duplicated verbatim in both functions, with an unrecoverable `sys.exit(-1)` on an unknown type
-(inconsistent with the `ValueError` style already used by `circuits.registry.get()`).
-`probabilistic_loss` takes a `loss_type` parameter but never branches on it at all — a dead
-parameter, noted here, not touched.
-
-Same fix shape as D4's circuit registry: a single `LOSS_FNS: Dict[str, Callable]` mapping name to
-scoring function (e.g. `{'MSE': mfunc.mean_squared_error, 'BCE': mfunc.binary_cross_entropy}`),
-looked up once per call, raising on an unknown name instead of exiting the process. Adding a new
-loss becomes "write the function, add one dict entry" — no existing cost function edited.
-
-**Done when:** `VQC_cost`, `batched_VQC_cost`, and `probabilistic_loss` all resolve their scoring
-function through one shared lookup; an unknown `loss_type` raises `ValueError` (listing valid
-names) instead of calling `sys.exit`.
 
 ### D12 — QFI/CircuitWeights compatibility *(proposed, not yet decided)*
 

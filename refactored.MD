@@ -343,3 +343,36 @@ comparison's passing result is preserved above under D8.
 confirmed by direct test to raise `AttributeError` against a real `CircuitWeights`. Also noted
 there: `QuantumTrainer.iteration()`'s validation branch only works at `batch_size=1` — pre-existing,
 untouched by this change.
+
+## D11 — Loss function registry
+
+**Commit:** `6cdc614`. **File:** `quantum/losses.py`.
+
+`VQC_cost` and `batched_VQC_cost` each hardcoded an identical `if loss_type=='BCE': ... elif
+loss_type=='MSE': ... else: sys.exit(-1)`. Replaced with one module-level lookup:
+
+```python
+LOSS_FNS: Dict[str, Callable] = {
+    'MSE': mfunc.mean_squared_error,
+    'BCE': mfunc.binary_cross_entropy,
+}
+```
+
+Both functions now do `score = exp_vals + bias` unconditionally, then
+`LOSS_FNS[loss_type](labels, score)` (raising `ValueError` listing valid names on an unknown
+`loss_type`, replacing the old unrecoverable `sys.exit(-1)`). Adding a new loss is now "write the
+function, add one dict entry" — no existing cost function is touched.
+
+**Correction made to the original D11 write-up:** it proposed folding `probabilistic_loss` into the
+same lookup too. Re-checked against the actual code: `probabilistic_loss` takes a `loss_type`
+parameter but never branches on it, and its scoring (indexing a probability vector by label) isn't
+the same "labels, score -> scalar" shape as MSE/BCE. Left untouched; the dead `loss_type` parameter
+is noted, not fixed, matching how other found-but-out-of-scope issues have been handled all
+session. Now-unused `sys` import removed from `losses.py`.
+
+**Verified:** `quantum/losses.py` compiles; MSE and BCE costs/scores are numerically unchanged
+(same values as the D9 verification run: `MSE: cost=0.792801 score=0.109606`,
+`BCE: cost=2.210861`); an unknown `loss_type` now raises `ValueError: Unknown loss_type 'bogus'.
+Registered: ['MSE', 'BCE']` from both `VQC_cost` and `batched_VQC_cost`; all 3 existing tests still
+pass; `train.py`/`evaluate.py`/`quantum/architectures.py` all still compile; `train.py` still fails
+at exactly the same pre-existing `config_name` bug.
