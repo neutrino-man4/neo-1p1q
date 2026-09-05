@@ -1,8 +1,9 @@
 """
 Run inference with a trained QuantumClassifier and report ROC/AUC on the held-out
 test set. Replaces the old test.py / test_copy.py / test_jetclass.py, which targeted
-a QuantumAutoencoder API that no longer exists. Mirrors train.py's Hydra config
-style: point --seed at the run whose weights you want to load.
+a QuantumAutoencoder API that no longer exists. Point --config at the run's saved
+config.yaml (or a base config with seed=<run> on the CLI) to pick which weights to
+load.
 Author: Aritra Bal (ETP)
 Date: 2026-09-04
 """
@@ -10,7 +11,6 @@ import glob
 import os
 import pathlib
 
-import hydra
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -22,9 +22,9 @@ import case_reader as cr
 import helpers.utils as ut
 import quantum.architectures as qc
 import quantum.losses as loss
+from helpers.config import load_config
 
 
-@hydra.main(config_path="./hydra_configs/VQC", config_name="base")
 def main(cfg: DictConfig) -> None:
     save_dir = os.path.join(cfg.save_dir, cfg.seed)
     dump_dir = os.path.join(cfg.dump, cfg.seed)
@@ -97,4 +97,4 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(load_config())

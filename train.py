@@ -1,4 +1,3 @@
-import hydra
 from omegaconf import DictConfig, OmegaConf
 import os
 import pathlib
@@ -13,11 +12,11 @@ import helpers.utils as ut
 import case_reader as cr
 import quantum.losses as loss
 from quantum.circuits.base import CircuitWeights
+from helpers.config import load_config, save_config
 from loguru import logger
 import wandb
 
 
-@hydra.main(config_path="./hydra_configs/VQC", config_name="base")
 def main(cfg: DictConfig):
     # Set up directories
     base_dir: str = cfg.base_dir
@@ -42,14 +41,12 @@ def main(cfg: DictConfig):
     
     print("Will save models to: ", save_dir)
 
-    # Save initial arguments for logging purposes
-    ut.Pickle(cfg, 'args', path=save_dir)
-    with open(os.path.join(save_dir, 'args.txt'), 'w+') as f:
-        f.write(repr(cfg))
+    # Preserve the exact config this run used, in one reusable file.
+    save_config(cfg, os.path.join(save_dir, 'config.yaml'))
 
     # Further setup based on config
     if cfg.resume:
-        test_args = ut.Unpickle(os.path.join(save_dir, 'args.pickle'))
+        test_args = OmegaConf.load(os.path.join(save_dir, 'config.yaml'))
         import importlib
         qc = importlib.import_module('saved_models.' + cfg.seed + '.FROZEN_ARCHITECTURE')
         model_path = sorted(glob.glob(os.path.join(save_dir, 'checkpoints', 'ep*.pickle')))[-1]
@@ -118,11 +115,6 @@ def main(cfg: DictConfig):
     
     # Print training parameters using the VQC instance method
     VQC.print_training_params()
-
-    # Save initial arguments for logging purposes
-    ut.Pickle(cfg, 'args', path=save_dir)
-    with open(os.path.join(save_dir, 'args.txt'), 'w+') as f:
-        f.write(repr(cfg))
 
     # Load the data: balanced signal vs background, per the config keys.
     # JetClass layout is <data_dir>/<split>/<sample>/<sample>_NNN.h5.
@@ -235,4 +227,4 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    main()
+    main(load_config())
