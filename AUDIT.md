@@ -83,6 +83,7 @@ Called modules and their role:
 | `hydra_configs/` | 140+ leaf YAMLs (`VQC_JC_001_8Q7T.yaml` ... `VQC_JC_049_8Q.yaml`, similarly under `AOJ/`, `QAE/`, `QFI/`, `VPC/`) — one file per historical run, most differing from `base.yaml` by 2-3 values (seed, wires, trash_qubits). This is an experiment log encoded as config files, not a config system. |
 | `quantum/math_functions.py` | `transform()` and `double_sided_leaky_relu()` are defined but not called anywhere in `losses.py` (both call sites are commented out). |
 | `__pycache__/` dirs | Committed working-tree clutter (`quantum/__pycache__/*.pyc` for 3 Python versions) — already covered by `.gitignore`, just not cleaned locally. |
+| `train.py:20` hydra decorator | `@hydra.main(config_path="./hydra_configs/VQC", config_name="config")` — no `config.yaml` has ever existed in this repo (only `base.yaml`), so `python train.py` fails at startup with Hydra unable to resolve the config. `evaluate.py:28` uses the correct `config_name="base"`. Flagged, not fixed — a one-line change (`"config"` -> `"base"`), but out of scope for the circuit refactor. |
 
 The three `test*.py` scripts appear to be inference/ROC-evaluation scripts that have not been
 updated since `quantum/architectures.py` was refactored from an autoencoder (`QuantumAutoencoder`,
