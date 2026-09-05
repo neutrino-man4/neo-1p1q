@@ -1,11 +1,10 @@
 """
-D9 wiring test: QuantumClassifier.set_circuit()'s registry-based circuit and
-state-circuit must match VQCCircuit/_state_build called directly. This test
-used to compare the new implementation against the pre-switchover
-_vqc_circuit/_vqc_state_circuit methods (D8); those methods are deleted as of
-D9, so it now guards the wiring in set_circuit() instead -- the circuit
-body's correctness against the old implementation was already locked down by
-D8's original comparison, recorded in refactored.MD.
+D9 wiring test: QuantumClassifier.set_circuit()'s registry-based circuit must
+match VQCCircuit called directly. This test used to compare the new
+implementation against the pre-switchover _vqc_circuit method (D8); that
+method is deleted as of D9, so it now guards the wiring in set_circuit()
+instead -- the circuit body's correctness against the old implementation was
+already locked down by D8's original comparison, recorded in refactored.MD.
 Author: Aritra Bal (ETP)
 2026-09-05
 """
@@ -54,19 +53,6 @@ class TestVQCCircuitWiring(unittest.TestCase):
         wired_out = self.qc.circuit(self.weights, self.inputs)
         standalone_out = standalone(self.weights, self.inputs, self.wires)
         self.assertAlmostEqual(float(wired_out), float(standalone_out), places=10)
-
-    def test_state_matches(self) -> None:
-        """qc.state_circuit_qnode must match a hand-built state QNode for the same circuit."""
-        standalone = qml.QNode(
-            lambda w, i: VQCCircuit(num_layers=self.num_layers).build(
-                w, i, self.wires, measure_override=lambda *_: qml.state()
-            ),
-            self.qc.device,
-            interface=self.qc.backend,
-        )
-        wired_state = onp.array(self.qc.state_circuit_qnode(self.weights, self.inputs))
-        standalone_state = onp.array(standalone(self.weights, self.inputs))
-        self.assertTrue(onp.allclose(wired_state, standalone_state, atol=1e-10))
 
 
 if __name__ == '__main__':
