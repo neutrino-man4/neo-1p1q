@@ -2,6 +2,7 @@
 from typing import Optional, Callable, Union, List, Dict, Tuple, Any
 import pennylane as qml
 from helpers.utils import getIndex
+from quantum.circuits.base import CircuitWeights
 from itertools import combinations
 import time
 from tqdm import tqdm
@@ -371,7 +372,32 @@ class QuantumClassifier:
                 qml.CNOT(wires=[w, (w + 1 + L) % N])
         
         return qml.state()
-    
+
+    def _state_build(
+        self,
+        weights: CircuitWeights,
+        inputs: Optional[np.ndarray] = None,
+        wires: Optional[List[int]] = None,
+    ) -> Any:
+        """
+        State version of a registry circuit, derived generically for QFI.
+
+        Replaces the hand-duplicated *_state_circuit methods above: any
+        Circuit's build() already ends with exactly one measure() call, so
+        swapping that call for qml.state() via measure_override gives the
+        state version for free. Not yet wired into set_circuit() -- see D9.
+
+        Args:
+            weights: rotation tensor + named aux weights for self._impl.
+            inputs: input data to be encoded in the circuit.
+            wires: wires to build the circuit over (defaults to self.auto_wires).
+
+        Returns:
+            Full quantum state vector.
+        """
+        wires = wires if wires is not None else self.auto_wires
+        return self._impl.build(weights, inputs, wires, measure_override=lambda *_: qml.state())
+
     def set_circuit(self, circuit_type: str = 'normal') -> None:
         """
         Configure the QNode circuit for the quantum classifier.
