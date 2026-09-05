@@ -573,7 +573,16 @@ class QuantumClassifier:
             train: If True, enables gradients for the weights
         """
         dictionary = ut.Unpickle(model_path)
-        self.current_weights = np.array(dictionary['weights'], requires_grad=train)
+        saved_weights = dictionary['weights']
+        if isinstance(saved_weights, CircuitWeights):
+            # D7: split-weight checkpoints carry their own rot/aux structure --
+            # just re-enable gradients on each trainable piece, nothing to rearrange.
+            self.current_weights = CircuitWeights(
+                rot=np.array(saved_weights.rot, requires_grad=train),
+                aux={k: np.array(v, requires_grad=train) for k, v in saved_weights.aux.items()},
+            )
+            return
+        self.current_weights = np.array(saved_weights, requires_grad=train)
         if rearrange:
             x_weights= self.current_weights[:self.n_qubits*self.num_layers]
             y_weights = self.current_weights[self.n_qubits*self.num_layers:2*self.n_qubits*self.num_layers]
