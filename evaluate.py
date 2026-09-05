@@ -61,7 +61,11 @@ def main(cfg: DictConfig) -> None:
 
     test_key = 'VQC_test'
     test_path = ps.PathSetter(data_path=cfg.data_dir).get_data_path(test_key)
-    test_filelist = sorted(glob.glob(os.path.join(test_path, '*.h5')))
+    # JetClass files sit one level down per sample type; interleave them by file number.
+    test_filelist = sorted(
+        glob.glob(os.path.join(test_path, '**', '*.h5'), recursive=True),
+        key=lambda p: os.path.basename(p).rsplit('_', 1)[-1],
+    )
     if len(test_filelist) == 0:
         raise FileNotFoundError(f"Could not find test files at {test_path}")
     logger.info(f"Testing on {len(test_filelist)} files found at {test_path}")
@@ -73,7 +77,6 @@ def main(cfg: DictConfig) -> None:
         train=False,
         max_samples=cfg.read_n,
         normalize_pt=cfg.norm_pt,
-        dataset=cfg.dataset
     )
 
     costs, scores, labels = VQC.run_inference(test_loader, loss_fn=cost_fn, loss_type=cfg.loss)

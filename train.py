@@ -130,8 +130,11 @@ def main(cfg: DictConfig):
     val_key = 'VQC_val'
     
     logger.info(f'loading data from {ps.PathSetter(data_path=cfg.data_dir).get_data_path(data_key)}')
-    train_filelist = sorted(glob.glob(os.path.join(ps.PathSetter(data_path=cfg.data_dir).get_data_path(data_key), '*.h5')))
-    val_filelist = sorted(glob.glob(os.path.join(ps.PathSetter(data_path=cfg.data_dir).get_data_path(val_key), '*.h5')))
+    # JetClass files sit one level down per sample type (<split>/<sample>/<sample>_NNN.h5);
+    # sorting by the trailing file number interleaves sample types instead of grouping them.
+    _by_file_number = lambda p: os.path.basename(p).rsplit('_', 1)[-1]
+    train_filelist = sorted(glob.glob(os.path.join(ps.PathSetter(data_path=cfg.data_dir).get_data_path(data_key), '**', '*.h5'), recursive=True), key=_by_file_number)
+    val_filelist = sorted(glob.glob(os.path.join(ps.PathSetter(data_path=cfg.data_dir).get_data_path(val_key), '**', '*.h5'), recursive=True), key=_by_file_number)
     num_particles = getattr(cfg, 'num_particles', len(VQC.auto_wires))
     logger.info(f"Number of particles to load: {num_particles}") 
     
@@ -147,19 +150,17 @@ def main(cfg: DictConfig):
         batch_size=cfg.batch_size, 
         input_shape=(num_particles, 3), 
         train=True,
-        max_samples=train_max_n, 
-        normalize_pt=cfg.norm_pt, 
+        max_samples=train_max_n,
+        normalize_pt=cfg.norm_pt,
         logger=logger,
-        dataset=cfg.dataset
     )
     val_loader = cr.OneP1QDataLoader(
-        filelist=val_filelist, 
-        batch_size=cfg.batch_size, 
-        input_shape=(num_particles, 3), 
+        filelist=val_filelist,
+        batch_size=cfg.batch_size,
+        input_shape=(num_particles, 3),
         train=False,
-        max_samples=valid_max_n, 
-        normalize_pt=cfg.norm_pt, 
-        dataset=cfg.dataset
+        max_samples=valid_max_n,
+        normalize_pt=cfg.norm_pt,
     )
 
     # Initialize the optimizer
