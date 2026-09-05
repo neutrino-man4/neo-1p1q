@@ -2,7 +2,8 @@
 from typing import Optional, Callable, Union, List, Dict, Tuple, Any
 import pennylane as qml
 from helpers.utils import getIndex
-from quantum.circuits.base import CircuitWeights
+from quantum.circuits.base import Circuit, CircuitWeights
+from quantum.circuits import registry
 from itertools import combinations
 import time
 from tqdm import tqdm
@@ -14,19 +15,6 @@ import subprocess
 from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score
 import json
-
-
-def sigmoid(x: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
-    """
-    Sigmoid activation function.
-    
-    Args:
-        x: Input value or array
-        
-    Returns:
-        Sigmoid of input
-    """
-    return 1 / (1 + np.exp(-x))
 
 
 class QuantumClassifier:
@@ -73,9 +61,10 @@ class QuantumClassifier:
         self.device = self._set_device(shots=shots, device_name=dev_name)
         
         # Circuit and weights
+        self._impl: Optional[Circuit] = None
         self.circuit: Optional[qml.QNode] = None
         self.state_circuit_qnode: Optional[qml.QNode] = None
-        self.current_weights: Optional[np.ndarray] = None
+        self.current_weights: Optional[CircuitWeights] = None
         
         # Data indices for particle properties
         self.index = {
@@ -148,231 +137,6 @@ class QuantumClassifier:
         print("LETS GOOOOOOOOOOOOO")
         time.sleep(1)
     
-    def _vqc_circuit(
-        self, 
-        weights: np.ndarray, 
-        inputs: Optional[np.ndarray] = None
-    ) -> Any:
-        """
-        Core quantum circuit implementation for classification.
-        
-        Args:
-            weights: Circuit parameters for rotations
-            inputs: Input data to be encoded in the circuit
-            
-        Returns:
-            Expected value of Pauli-Z measurement on first qubit
-        """
-        N = len(self.auto_wires)
-        
-        # Scaling factor from weights
-        sf = 2 * np.pi * sigmoid(weights[-1]) + 1
-        
-        # Multi-layer circuit
-        for L in range(self.num_layers):
-            # State preparation using input data
-            for w in self.auto_wires:
-                # Extract spherical coordinates from input data
-                zenith = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['eta']])    # eta
-                azimuth = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['phi']])   # phi  
-                radius = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['pt']])     # pt
-                
-                # Handle single sample case
-                if inputs.shape[0] == 1:
-                    zenith = zenith.item()
-                    azimuth = azimuth.item()
-                    radius = radius.item()
-                
-                # Apply rotations based on input data
-                #qml.RY(sf * radius * zenith, wires=w)
-                qml.RY(sf*radius*zenith, wires=w)
-                qml.RX(sf * radius * azimuth, wires=w)
-            
-            # Calculate weight indices for this layer
-            start = 3 * L * N
-            
-            # Ring of CNOT gates for entanglement
-            for w in self.auto_wires:
-                qml.CNOT(wires=[w, (w + 1) % N])
-            
-            # Parameterized rotations
-            rot_z = weights[start+0:start+3*N:3]  # Indices: 0, 3, 6, 9, ... (RZ rotations)
-            rot_y = weights[start+1:start+3*N:3]  # Indices: 1, 4, 7, 10, ... (RY rotations)  
-            rot_x = weights[start+2:start+3*N:3]  # Indices: 2, 5, 8, 11, ... (RX rotations)
-
-            for rz, ry, rx, w in zip(rot_z, rot_y, rot_x, self.auto_wires):
-                qml.Rot(0., ry, rz, wires=w)  # Note: qml.Rot(phi, theta, omega) = RZ(omega)RY(theta)RZ(phi)
-                qml.RX(rx, wires=w)
-            # Return the full quantum state        
-        obs = [qml.PauliZ(i) for i in self.auto_wires]
-        coeffs = weights[-11:-1]
-        H = qml.Hamiltonian(coeffs, obs)        
-        return qml.expval(H)
-        #return qml.expval(qml.PauliZ(0))
-    
-    def _vqc_state_circuit(
-        self, 
-        weights: np.ndarray, 
-        inputs: Optional[np.ndarray] = None
-    ) -> Any:
-        """
-        State version of the VQC circuit for QFI calculations.
-        Same as _vqc_circuit but returns the full quantum state.
-        
-        Args:
-            weights: Circuit parameters for rotations
-            inputs: Input data to be encoded in the circuit
-            
-        Returns:
-            Full quantum state vector
-        """
-        N = len(self.auto_wires)
-        
-        # Scaling factor from weights
-        sf = 2 * np.pi * sigmoid(weights[-1]) + 1
-        
-        # Multi-layer circuit
-        for L in range(self.num_layers):
-            # State preparation using input data
-            for w in self.auto_wires:
-                # Extract spherical coordinates from input data
-                zenith = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['eta']])    # eta
-                azimuth = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['phi']])   # phi  
-                radius = np.squeeze(inputs[:, w+L*len(self.auto_wires), self.index['pt']])     # pt
-                
-                # Handle single sample case
-                if inputs.shape[0] == 1:
-                    zenith = zenith.item()
-                    azimuth = azimuth.item()
-                    radius = radius.item()
-                
-                # Apply rotations based on input data
-                qml.RY(sf * radius * zenith, wires=w)
-                qml.RX(sf * radius * azimuth, wires=w)
-            
-            # Calculate weight indices for this layer
-            start = 3 * L * N
-            
-            # Ring of CNOT gates for entanglement
-            for w in self.auto_wires:
-                qml.CNOT(wires=[w, (w + 1) % N])
-            
-            # Parameterized rotations
-            rot_z = weights[start+0:start+3*N:3]  # Indices: 0, 3, 6, 9, ... (RZ rotations)
-            rot_y = weights[start+1:start+3*N:3]  # Indices: 1, 4, 7, 10, ... (RY rotations)  
-            rot_x = weights[start+2:start+3*N:3]  # Indices: 2, 5, 8, 11, ... (RX rotations)
-
-            for rz, ry, rx, w in zip(rot_z, rot_y, rot_x, self.auto_wires):
-                qml.Rot(0., ry, rz, wires=w)  # Note: qml.Rot(phi, theta, omega) = RZ(omega)RY(theta)RZ(phi)
-                qml.RX(rx, wires=w)
-            # Return the full quantum state        
-        return qml.state()
-    
-    def _qcnn_implementation(
-        self, 
-        weights: np.ndarray, 
-        inputs: Optional[np.ndarray] = None
-    ) -> List[Any]:
-        """
-        Quantum Convolutional Neural Network circuit implementation.
-        
-        Args:
-            weights: Circuit parameters for rotations
-            inputs: Input data to be encoded in the circuit
-            
-        Returns:
-            List of expected values of Pauli-Z measurements on all qubits
-        """
-        N = len(self.auto_wires)
-        
-        # Scaling factor
-        sf = 2 * np.pi * sigmoid(weights[-2]) + 1
-        
-        # State preparation
-        for w in self.auto_wires:
-            zenith = np.squeeze(inputs[:, w, self.index['eta']])
-            azimuth = np.squeeze(inputs[:, w, self.index['phi']])
-            radius = np.squeeze(inputs[:, w, self.index['pt']])
-            
-            if inputs.shape[0] == 1:
-                zenith = zenith.item()
-                azimuth = azimuth.item() 
-                radius = radius.item()
-                
-            qml.RY(sf * radius * zenith, wires=w)
-            qml.RZ(sf * radius * azimuth, wires=w)
-        
-        # Initial entangling layer
-        for w in self.auto_wires:
-            qml.CY(wires=[w, (w + 1) % N])
-        
-        # Convolutional layers
-        for L in range(self.num_layers):
-            phi = weights[2 * L]
-            theta = weights[2 * L + 1]
-            
-            for w in self.auto_wires[:-(1 + L)]:
-                qml.RZ(phi, wires=w)
-                qml.RY(theta, wires=w)
-                qml.RZ(phi, wires=(w + L + 1) % N)
-                qml.RY(theta, wires=(w + L + 1) % N)
-                qml.CNOT(wires=[w, (w + 1 + L) % N])
-        
-        return [qml.expval(qml.PauliZ(i)) for i in self.auto_wires]
-    
-    def _qcnn_state_circuit(
-        self, 
-        weights: np.ndarray, 
-        inputs: Optional[np.ndarray] = None
-    ) -> Any:
-        """
-        State version of the QCNN circuit for QFI calculations.
-        Same as _qcnn_implementation but returns the full quantum state.
-        
-        Args:
-            weights: Circuit parameters for rotations
-            inputs: Input data to be encoded in the circuit
-            
-        Returns:
-            Full quantum state vector
-        """
-        N = len(self.auto_wires)
-        
-        # Scaling factor
-        sf = 2 * np.pi * sigmoid(weights[-2]) + 1
-        
-        # State preparation
-        for w in self.auto_wires:
-            zenith = np.squeeze(inputs[:, w, self.index['eta']])
-            azimuth = np.squeeze(inputs[:, w, self.index['phi']])
-            radius = np.squeeze(inputs[:, w, self.index['pt']])
-            
-            if inputs.shape[0] == 1:
-                zenith = zenith.item()
-                azimuth = azimuth.item() 
-                radius = radius.item()
-                
-            qml.RY(sf * radius * zenith, wires=w)
-            qml.RZ(sf * radius * azimuth, wires=w)
-        
-        # Initial entangling layer
-        for w in self.auto_wires:
-            qml.CY(wires=[w, (w + 1) % N])
-        
-        # Convolutional layers
-        for L in range(self.num_layers):
-            phi = weights[2 * L]
-            theta = weights[2 * L + 1]
-            
-            for w in self.auto_wires[:-(1 + L)]:
-                qml.RZ(phi, wires=w)
-                qml.RY(theta, wires=w)
-                qml.RZ(phi, wires=(w + L + 1) % N)
-                qml.RY(theta, wires=(w + L + 1) % N)
-                qml.CNOT(wires=[w, (w + 1 + L) % N])
-        
-        return qml.state()
-
     def _state_build(
         self,
         weights: CircuitWeights,
@@ -398,38 +162,24 @@ class QuantumClassifier:
         wires = wires if wires is not None else self.auto_wires
         return self._impl.build(weights, inputs, wires, measure_override=lambda *_: qml.state())
 
-    def set_circuit(self, circuit_type: str = 'normal') -> None:
+    def set_circuit(self, circuit_type: str = 'normal', operations_per_qubit: Optional[int] = None) -> None:
         """
-        Configure the QNode circuit for the quantum classifier.
-        
+        Configure the QNode circuit from the circuit registry.
+
         Args:
-            circuit_type: Type of circuit ('normal' or 'CNN')
+            circuit_type: registered circuit name (see quantum.circuits.registry).
+            operations_per_qubit: overrides the circuit's default rotation ops
+                per qubit per layer (R in its RotationShape), if given.
         """
-        if circuit_type == 'CNN':
-            print("Using CNN circuit with 1 layer (for now)")
-            print("Things might be slow")
-            time.sleep(2)
-            self.circuit = qml.QNode(
-                self._qcnn_implementation, 
-                self.device, 
-                interface=self.backend
-            )
-            self.state_circuit_qnode = qml.QNode(
-                self._qcnn_state_circuit,
-                self.device,
-                interface=self.backend
-            )
-        else:
-            self.circuit = qml.QNode(
-                self._vqc_circuit, 
-                self.device, 
-                interface=self.backend
-            )
-            self.state_circuit_qnode = qml.defer_measurements(qml.QNode(
-                self._vqc_state_circuit,
-                self.device,
-                interface=self.backend
-            ))
+        self._impl = registry.get(circuit_type, self.num_layers)
+        if operations_per_qubit is not None:
+            self._impl.operations_per_qubit = operations_per_qubit
+        self.circuit = qml.QNode(
+            lambda weights, inputs: self._impl.build(weights, inputs, self.auto_wires),
+            self.device,
+            interface=self.backend
+        )
+        self.state_circuit_qnode = qml.QNode(self._state_build, self.device, interface=self.backend)
     
     def fetch_circuit(self) -> qml.QNode:
         """
@@ -740,14 +490,28 @@ class QuantumTrainer:
             Training loss (if train=True) or tuple of (validation loss, scores)
         """
         if train:
-            self.current_weights, cost = self.optim.step_and_cost(
-                self.quantum_loss,
-                self.current_weights,
-                inputs=data,
-                labels=labels,
-                quantum_circuit=self.circuit,
-                loss_type=self.loss_type
+            # step_and_cost needs each trainable piece as its own argument (a
+            # CircuitWeights isn't itself differentiable) -- see D7. cost_fn
+            # repacks rot + aux back into a CircuitWeights for the real loss.
+            aux_keys = list(self.current_weights.aux.keys())
+
+            def cost_fn(rot: np.ndarray, *aux_values: np.ndarray) -> np.ndarray:
+                weights = CircuitWeights(rot=rot, aux=dict(zip(aux_keys, aux_values)))
+                return self.quantum_loss(
+                    weights,
+                    inputs=data,
+                    labels=labels,
+                    quantum_circuit=self.circuit,
+                    loss_type=self.loss_type
+                )
+
+            updated_args, cost = self.optim.step_and_cost(
+                cost_fn,
+                self.current_weights.rot,
+                *(self.current_weights.aux[k] for k in aux_keys)
             )
+            new_rot, *new_aux_values = updated_args
+            self.current_weights = CircuitWeights(rot=new_rot, aux=dict(zip(aux_keys, new_aux_values)))
             return float(cost)
         else:
             cost, scores = self.quantum_loss(
