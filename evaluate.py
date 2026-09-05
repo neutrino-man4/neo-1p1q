@@ -71,7 +71,6 @@ def main(cfg: DictConfig) -> None:
     test_loader = cr.OneP1QDataLoader(
         signal_filelist=test_sig, background_filelist=test_bg,
         n_signal=cfg.n_signal_test, n_background=cfg.n_background_test,
-        batch_size=1,               # run_inference expects batch_size=1
         input_shape=(len(VQC.auto_wires), 3),
         train=False,
         normalize_pt=cfg.norm_pt,

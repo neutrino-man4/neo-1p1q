@@ -135,55 +135,48 @@ class TestFullTrainingLoop(unittest.TestCase):
 class TestEvaluateEquivalentInference(unittest.TestCase):
     """D10: reproduce evaluate.py's own pipeline against a real saved checkpoint."""
 
-    def test_run_inference_hits_missing_total_batches(self) -> None:
+    def _trained_classifier(self, save_dir: str):
+        """Train a tiny model and reload it the way evaluate.py does (test=False)."""
+        vqc, trainer = _build_trainer(save_dir, batch_size=1, epochs=1)
+        trainer.run_training_loop(
+            _make_batches(2, 1, 4, 1), _make_batches(2, 1, 4, 1)
+        )
+        trained_path = os.path.join(save_dir, 'trained_model.pickle')
+
+        vqc2 = arch.QuantumClassifier(
+            wires=4, shots=None, dev_name='default.qubit',
+            layers=1, backend_name='autograd', test=False,
+        )
+        vqc2.set_circuit('normal', operations_per_qubit=3)
+        vqc2.load_weights(trained_path)
+        return vqc2
+
+    def test_run_inference_runs_without_total_batches(self) -> None:
         """
-        New finding: QuantumClassifier(test=False) -- exactly what evaluate.py and
-        train.py both construct -- never sets self.total_batches (only the `if test:`
-        branch of __init__ does). run_inference() unconditionally reads
-        self.total_batches for tqdm's `total=`, so evaluate.py's real pipeline cannot
-        work as written. Pre-existing, unrelated to this refactor -- not fixed.
+        P2 fix: QuantumClassifier(test=False) -- what evaluate.py/train.py build --
+        no longer needs self.total_batches. run_inference() just walks the loader,
+        so evaluate.py's real pipeline runs end to end.
         """
         with tempfile.TemporaryDirectory() as save_dir:
-            vqc, trainer = _build_trainer(save_dir, batch_size=1, epochs=1)
-            trainer.run_training_loop(
-                _make_batches(2, 1, 4, 1), _make_batches(2, 1, 4, 1)
-            )
-            trained_path = os.path.join(save_dir, 'trained_model.pickle')
-
-            vqc2 = arch.QuantumClassifier(
-                wires=4, shots=None, dev_name='default.qubit',
-                layers=1, backend_name='autograd', test=False,
-            )
-            vqc2.set_circuit('normal', operations_per_qubit=3)
-            vqc2.load_weights(trained_path)
+            vqc2 = self._trained_classifier(save_dir)
             self.assertFalse(hasattr(vqc2, 'total_batches'))
-
-            test_loader = _make_batches(2, 1, 4, 1)
-            with self.assertRaises(AttributeError):
-                vqc2.run_inference(test_loader, loss_fn=loss.VQC_cost, loss_type='MSE')
-
-    def test_run_inference_otherwise_works(self) -> None:
-        """With total_batches worked around, the rest of the inference pipeline is sound."""
-        with tempfile.TemporaryDirectory() as save_dir:
-            vqc, trainer = _build_trainer(save_dir, batch_size=1, epochs=1)
-            trainer.run_training_loop(
-                _make_batches(2, 1, 4, 1), _make_batches(2, 1, 4, 1)
-            )
-            trained_path = os.path.join(save_dir, 'trained_model.pickle')
-
-            vqc2 = arch.QuantumClassifier(
-                wires=4, shots=None, dev_name='default.qubit',
-                layers=1, backend_name='autograd', test=False,
-            )
-            vqc2.set_circuit('normal', operations_per_qubit=3)
-            vqc2.load_weights(trained_path)
-            vqc2.total_batches = 4  # workaround for the bug pinned down above
 
             test_loader = _make_batches(4, 1, 4, 1)
             costs, scores, labels = vqc2.run_inference(test_loader, loss_fn=loss.VQC_cost, loss_type='MSE')
             self.assertEqual(len(costs), 4)
             self.assertEqual(len(scores), 4)
             self.assertEqual(len(labels), 4)
+
+    def test_run_inference_processes_multi_jet_chunks_one_at_a_time(self) -> None:
+        """A loader that groups jets is still scored jet by jet: N jets in -> N results out."""
+        with tempfile.TemporaryDirectory() as save_dir:
+            vqc2 = self._trained_classifier(save_dir)
+
+            test_loader = _make_batches(3, 4, 4, 1)  # 3 chunks x 4 jets = 12 jets
+            costs, scores, labels = vqc2.run_inference(test_loader, loss_fn=loss.VQC_cost, loss_type='MSE')
+            self.assertEqual(len(costs), 12)
+            self.assertEqual(len(scores), 12)
+            self.assertEqual(len(labels), 12)
 
 
 class TestKnownPreExistingBugs(unittest.TestCase):

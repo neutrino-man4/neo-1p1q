@@ -72,12 +72,6 @@ class QuantumClassifier:
         
         if test:
             self.set_circuit()
-            try:
-                self.total_batches=kwargs['read_n']
-                print(f"Will read {self.total_batches} batches with batch size 1")
-            except:
-                self.total_batches=100000
-                print("WARNING: total_batches not set, using default value of 100000")
     
     def _initialize_wires(self) -> None:
         """
@@ -211,7 +205,8 @@ class QuantumClassifier:
         Run inference on the classifier circuit using loaded weights and a dataloader.
         
         Args:
-            dataloader: DataLoader containing input data and labels (batch_size=1)
+            dataloader: DataLoader yielding input data and labels. Inference runs
+                one jet at a time regardless of how the loader groups them.
             loss_fn: Loss function to calculate the quantum cost (should be VQC_cost)
             loss_type: Type of loss function to use
             
@@ -229,23 +224,22 @@ class QuantumClassifier:
         all_costs = []
         all_scores = []
         all_labels = []
-        for batch_inputs, batch_labels in tqdm(dataloader, desc="Running inference",total=self.total_batches):
-            # batch_inputs.shape = (1, n_qubits, 3)
-            # batch_labels.shape = (1,)
-            
-            # Compute cost and score for this single sample
-            cost, score = loss_fn(
-                self.current_weights,
-                inputs=batch_inputs,
-                labels=batch_labels,
-                quantum_circuit=self.circuit,
-                return_scores=True,
-                loss_type=loss_type
-            )
-            
-            all_costs.append(float(cost))
-            all_scores.append(float(score))
-            all_labels.append(float(batch_labels[0]))
+        # Inference never needs batching: walk the loader's output jet by jet so
+        # loss_fn always sees a single sample, whatever grouping the loader uses.
+        for chunk_inputs, chunk_labels in tqdm(dataloader, desc="Running inference"):
+            for i in range(len(chunk_labels)):
+                cost, score = loss_fn(
+                    self.current_weights,
+                    inputs=chunk_inputs[i:i + 1],   # shape (1, n_qubits, 3)
+                    labels=chunk_labels[i:i + 1],   # shape (1,)
+                    quantum_circuit=self.circuit,
+                    return_scores=True,
+                    loss_type=loss_type
+                )
+
+                all_costs.append(float(cost))
+                all_scores.append(float(score))
+                all_labels.append(float(chunk_labels[i]))
         # Convert to numpy arrays
         costs = np.array(all_costs)    # Shape: (N_inputs,)
         scores = np.array(all_scores)  # Shape: (N_inputs,)
