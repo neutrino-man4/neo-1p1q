@@ -4,6 +4,7 @@ Author: Aritra Bal, ETP
 Description: This script contains the data loader classes for the MC Datasets used in the studies performed for the CMS analysis EXO-22-026
 '''
 
+import os
 import h5py
 import helpers.utils as ut
 from pennylane import numpy as np
@@ -18,52 +19,62 @@ eta_lims=ut.feature_limits['eta']
 phi_lims=ut.feature_limits['phi']
 class CASEJetClassDataset(IterableDataset):
     """
-    Iterable dataset that streams single-jet data from JetClass-style .h5 files.
+    Balanced binary dataset built from JetClass-style .h5 files.
 
-    Each file holds `jetConstituentsList` of shape (N, 100, 3) -- N jets, up to
-    100 particles each, (eta, phi, pt) per particle -- and `jetFeatures` of
-    shape (N, 10). Truth labels come from `truth_labels` if present, otherwise
-    they are inferred from the filename (a name containing "zjetsto" is treated
-    as QCD-like / label 0, anything else as label 1).
+    Reads `n_signal` jets from the signal files (label 1) and `n_background`
+    jets from the background files (label 0) -- stopping part-way through a file
+    once a target is met -- then concatenates and shuffles the two classes.
+    Each .h5 file holds `jetConstituentsList` of shape (N, 100, 3): N jets, up
+    to 100 particles each, (eta, phi, pt) per particle.
 
     Args:
-        filelist (List[str]): List of file paths to the .h5 files.
-        batch_size (int): Number of samples in each batch.
-        max_samples (int): Maximum number of samples to load.
-        data_key (str): Key to access the per-particle data inside the .h5 files.
-        feature_key (str): Key to access jet-level features.
-        input_shape (tuple[int]): (number of particles to read per jet, features per particle).
-        epsilon (float): Small constant to avoid division by zero.
-        train (bool): Whether to yield only training data, or labels as well.
-        selection (str): Constituent-selection mode passed through to helpers.
+        signal_filelist (List[str]): .h5 files for the signal class (label 1).
+        background_filelist (List[str]): .h5 files for the background class (label 0).
+        n_signal (int): number of signal jets to read.
+        n_background (int): number of background jets to read.
+        batch_size (int): jets per yielded batch.
+        data_key (str): key for the per-particle data inside the .h5 files.
+        feature_key (str): key for jet-level features.
+        input_shape (tuple[int]): (particles per jet to keep, features per particle).
+        epsilon (float): small offset used by the fixed rescaling.
+        train (bool): kept for call-site compatibility; both classes are always labelled.
+        normalize_pt (bool): divide particle pt by jet pt instead of fixed rescaling.
+        logger: optional loguru-style logger; falls back to print.
+        seed (int): RNG seed for the signal/background shuffle.
 
     Yields:
-        Tuple[np.ndarray, np.ndarray]: a batch of data and its integer labels.
+        Tuple[np.ndarray, np.ndarray]: a batch of jets and their integer labels.
     """
-    def __init__(self, filelist:List[str]=None, batch_size:int=32, max_samples:int=5e4, data_key='jetConstituentsList',\
-                 feature_key='jetFeatures',input_shape:tuple[int]=(10, 3),epsilon:float=1.0e-4,train:bool=True,\
-                    normalize_pt:bool=False,logger=None,selection='equal'):
+    def __init__(self, signal_filelist:List[str], background_filelist:List[str],
+                 n_signal:int, n_background:int, batch_size:int=32,
+                 data_key='jetConstituentsList', feature_key='jetFeatures',
+                 input_shape:tuple[int]=(10, 3), epsilon:float=1.0e-4, train:bool=True,
+                 normalize_pt:bool=False, logger=None, seed:int=0):
         super().__init__()
-        self.filelist = sorted(filelist)
+        self.signal_filelist = sorted(signal_filelist)
+        self.background_filelist = sorted(background_filelist)
+        self.n_signal = int(n_signal)
+        self.n_background = int(n_background)
         self.batch_size = batch_size
         self.input_shape = input_shape
         self.pt_index=ut.getIndex('particle','pt')
         self.eta_index=ut.getIndex('particle','eta')
         self.phi_index=ut.getIndex('particle','phi')
         self.jpt_index=ut.getIndex('jet','jet_pt')
-        self.j_msd_index=ut.getIndex('jet','jet_sdmass')
-        self.selection=selection
-        self.max_samples = max_samples
         self.epsilon=epsilon
         self.data_key=data_key
         self.feature_key=feature_key
         self.train=train
-        self.batch_counter=0
         self.normalize_pt=normalize_pt
         self.logger=logger
         self.n_qubits=input_shape[0]
-        self.rng = np.random.default_rng(seed=None)
-        # fresh entropy is pulled --> but only once for each instance of the dataloader.
+        self.seed=seed
+        self._data, self._labels = self._materialise()
+
+    def _log(self, msg:str) -> None:
+        """Route a message through the logger if present, else stdout."""
+        self.logger.info(msg) if self.logger is not None else print(msg)
+
     def fixed_rescale(self,data: np.ndarray, epsilon: float = 1.0e-4, type='pt') -> np.ndarray:
         """
         Rescales the data to a specified range. Instead of using the min/max values of the data array,
@@ -91,136 +102,87 @@ class CASEJetClassDataset(IterableDataset):
         data_scaled = ((data_reshaped - assumed_limits[type][0])/(assumed_limits[type][1]-assumed_limits[type][0]))*(max-min) + min # scale using fixed values of 
         return data_scaled.reshape(data_shape[0], data_shape[1])
     
-    def load_and_preprocess_file(self, file_path:str,inference:bool=False):
+    def _load_file(self, file_path:str) -> np.ndarray:
         """
-        Loads and preprocesses a single JetClass-style .h5 file.
+        Load one .h5 file and return its preprocessed jets.
 
-        Args:
-            file_path (str): Path to the .h5 file.
-            inference (bool): Whether the data is being loaded for inference.
+        Keeps the `n_qubits` hardest particles per jet (by pt), then rescales
+        pt/eta/phi -- either dividing pt by jet pt (`normalize_pt`) or applying
+        the fixed rescaling from helpers.utils.
 
         Returns:
-            np.ndarray: Per-jet particle data, shape (N, n_qubits, 3).
-            np.ndarray: Integer truth labels, shape (N,).
+            np.ndarray: shape (M, n_qubits, 3).
         """
         with h5py.File(file_path, 'r') as file:
-            # jetConstituentsList has shape (N, 100, 3): N jets, up to 100 particles, (eta, phi, pt).
-            jet_features=np.array(file[self.feature_key])
-            jet_pt=jet_features[:,self.jpt_index]
-
-            if self.logger is not None:
-                self.logger.info(f"Reading hardest {self.n_qubits} PFCands per jet")
-            else:
-                print(f"Reading hardest {self.n_qubits} PFCands per jet")
+            jet_pt = np.array(file[self.feature_key])[:, self.jpt_index]
             jet_etaphipt = np.array(file[self.data_key][()])
-            sorted_indices = np.argsort(-jet_etaphipt[...,self.pt_index], axis=-1)
-            jet_etaphipt = np.take_along_axis(jet_etaphipt, sorted_indices[...,None], axis=1)
-            jet_etaphipt = jet_etaphipt[:,:self.n_qubits,:]
-
-            try:
-                truth_label = np.array(file['truth_labels'][()])
-            except KeyError:
-                if 'zjetsto'.casefold() in file_path.casefold():
-                    truth_label = np.zeros(jet_etaphipt.shape[0])
-                    print("Inferred: QCD like jets")
-                else:
-                    truth_label = np.ones(jet_etaphipt.shape[0])
-        truth_label=np.array(truth_label,dtype=np.integer)
+        sorted_indices = np.argsort(-jet_etaphipt[..., self.pt_index], axis=-1)
+        jet_etaphipt = np.take_along_axis(jet_etaphipt, sorted_indices[..., None], axis=1)
+        jet_etaphipt = jet_etaphipt[:, :self.n_qubits, :]
 
         if self.normalize_pt:
-            print("Normalizing PFCand pT by jet pT")
-            jet_etaphipt[...,self.pt_index]=jet_etaphipt[...,self.pt_index]/jet_pt[:,np.newaxis]
+            jet_etaphipt[..., self.pt_index] = jet_etaphipt[..., self.pt_index] / jet_pt[:, np.newaxis]
         else:
-            jet_etaphipt[...,self.pt_index]=self.fixed_rescale(jet_etaphipt[...,self.pt_index], epsilon=self.epsilon,type='pt')
+            jet_etaphipt[..., self.pt_index] = self.fixed_rescale(jet_etaphipt[..., self.pt_index], epsilon=self.epsilon, type='pt')
+        jet_etaphipt[..., self.eta_index] = self.fixed_rescale(jet_etaphipt[..., self.eta_index], epsilon=self.epsilon, type='eta')
+        jet_etaphipt[..., self.phi_index] = self.fixed_rescale(jet_etaphipt[..., self.phi_index], epsilon=self.epsilon, type='phi')
+        return jet_etaphipt
 
-        jet_etaphipt[...,self.eta_index]=self.fixed_rescale(jet_etaphipt[...,self.eta_index], epsilon=self.epsilon,type='eta')
-        jet_etaphipt[...,self.phi_index]=self.fixed_rescale(jet_etaphipt[...,self.phi_index], epsilon=self.epsilon,type='phi')
+    def _read_class(self, filelist:List[str], n_target:int, label:int) -> Tuple[np.ndarray, np.ndarray]:
+        """Read up to `n_target` jets across `filelist`, all tagged with `label`."""
+        name = os.path.basename(os.path.dirname(filelist[0])) if filelist else '?'
+        self._log(f"Reading up to {n_target} '{name}' jets (label {label}); keeping the {self.n_qubits} hardest particles each")
+        chunks, count = [], 0
+        for file_path in filelist:
+            if count >= n_target:
+                break
+            jets = self._load_file(file_path)
+            take = min(len(jets), n_target - count)
+            chunks.append(jets[:take])
+            count += take
+        if count < n_target:
+            self._log(f"WARNING: requested {n_target} '{name}' jets but only {count} were available")
+        data = np.concatenate(chunks, axis=0) if chunks else np.empty((0, self.n_qubits, 3))
+        return data, nnp.full(len(data), label, dtype=nnp.integer)
 
-        print("sample max pt: ",np.max(jet_etaphipt[:,:,self.pt_index]))
-        print("sample min pt: ",np.min(jet_etaphipt[:,:,self.pt_index]))
-        print("sample max eta: ",np.max(jet_etaphipt[:,:,self.eta_index]))
-        print("sample min eta: ",np.min(jet_etaphipt[:,:,self.eta_index]))
-        print("sample max phi: ",np.max(jet_etaphipt[:,:,self.phi_index]))
-        print("sample min phi: ",np.min(jet_etaphipt[:,:,self.phi_index]))
-        if inference:
-            return jet_etaphipt,jet_features,truth_label
-        return jet_etaphipt, truth_label
+    def _materialise(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Read both classes, concatenate, shuffle, and log the resulting split."""
+        sig_data, sig_labels = self._read_class(self.signal_filelist, self.n_signal, 1)
+        bg_data, bg_labels = self._read_class(self.background_filelist, self.n_background, 0)
+        data = np.concatenate([sig_data, bg_data], axis=0)
+        labels = nnp.concatenate([sig_labels, bg_labels], axis=0)
 
-    def load_for_inference(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Loads data from the specified .h5 files for inference.
+        idx = nnp.random.default_rng(self.seed).permutation(len(data))
+        data, labels = data[idx], labels[idx]
 
-        Reads files until `max_samples` jets have been collected.
-
-        Returns:
-            Tuple[np.ndarray, np.ndarray, np.ndarray]:
-                - jet_array (np.ndarray): per-jet particle data, shape (N, n_qubits, 3).
-                - jetFeatures_array (np.ndarray): jet-level features, shape (N, 10).
-                - truth_labels (np.ndarray): truth labels, shape (N,).
-        """
-        print(f"Will read a total of {self.max_samples} events for inference")
-        jetFeatures_array=[]
-        while len(jetFeatures_array)<self.max_samples:
-            for i,file_path in enumerate(self.filelist):
-                jet_etaphipt,jet_features,truth_label= self.load_and_preprocess_file(file_path,inference=True)
-                if i==0:
-                    jetFeatures_array=jet_features
-                    jet_array=jet_etaphipt
-                    truth_labels=truth_label
-                else:
-                    jetFeatures_array=np.concatenate([jetFeatures_array,jet_features],axis=0)
-                    jet_array=np.concatenate([jet_array,jet_etaphipt],axis=0)
-                    truth_labels=np.concatenate([truth_labels,truth_label],axis=0)
-                if len(jetFeatures_array)>=self.max_samples:
-                    break
-        jet_array=jet_array[:self.max_samples]
-        jetFeatures_array=jetFeatures_array[:self.max_samples]
-        truth_labels=truth_labels[:self.max_samples]
-        return np.array(jet_array,requires_grad=False),np.array(jetFeatures_array,requires_grad=False),np.array(truth_labels,requires_grad=False)
+        n_sig, n_bg = len(sig_data), len(bg_data)
+        total = n_sig + n_bg
+        self._log(f"JetClass loader finished: {total} jets read -- {n_sig} signal (label 1), {n_bg} background (label 0)")
+        if total:
+            self._log(
+                f"  post-rescale ranges: pt [{float(data[..., self.pt_index].min()):.3f}, {float(data[..., self.pt_index].max()):.3f}], "
+                f"eta [{float(data[..., self.eta_index].min()):.3f}, {float(data[..., self.eta_index].max()):.3f}], "
+                f"phi [{float(data[..., self.phi_index].min()):.3f}, {float(data[..., self.phi_index].max()):.3f}]"
+            )
+        return data, labels
 
     def __iter__(self)-> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
-        '''
-        Iterator that yields batches of data
-        '''
-        sample_counter=0
-        #self.batch_counter=0
-        for file_path in self.filelist:
-            data, labels = self.load_and_preprocess_file(file_path)
-            # Shuffle the data from this file only if training on a per-jet basis, otherwise it becomes necessary to preserve the order of jets
-            
-            #indices = np.arange(data.shape[0])
-            #self.rng.shuffle(indices)
-            #print("Loaded data was shuffled")
-            #data = data[indices]
-            #labels = labels[indices]
-            
-            # Yield data in batches
-            for i in range(0, len(data), self.batch_size):
-                if sample_counter >= self.max_samples:
-                    return
-                
-                end = i + self.batch_size
-                if end > len(data):
-                    end = len(data)
-                
-                batch_data = data[i:end]
-                batch_labels = labels[i:end]
-                
-                batch_data = torch.from_numpy(batch_data).float()
-                #batch_labels = torch.from_numpy(batch_labels).float() # Assuming labels are floats
-                
-                sample_counter += batch_data.shape[0]
-                yield np.array(batch_data,requires_grad=False), np.array(batch_labels,dtype=np.integer,requires_grad=False)
+        '''Yield the pre-loaded, pre-shuffled jets in batches of `batch_size`.'''
+        for i in range(0, len(self._data), self.batch_size):
+            batch_data = torch.from_numpy(nnp.asarray(self._data[i:i + self.batch_size])).float()
+            batch_labels = self._labels[i:i + self.batch_size]
+            yield np.array(batch_data, requires_grad=False), np.array(batch_labels, dtype=np.integer, requires_grad=False)
+
 
 def OneP1QDataLoader(input_shape:tuple[int]=(100, 3),train:bool=True,**kwargs) -> DataLoader:
     '''
-    Wrapper function to create a DataLoader for the CASEJetClassDataset.
-    Args:
-        filelist (List[str]): List of file paths to the .h5 files containing the data.
-        batch_size (int): Number of samples in each batch.
-        input_shape (tuple[int]): Shape of the input data, with the first element being the no. of particles per jet to read and the 2nd typically being (eta,phi,pt).
+    Build a DataLoader over a balanced signal/background CASEJetClassDataset.
+
+    Pass `signal_filelist`, `background_filelist`, `n_signal`, `n_background`
+    (plus optional `batch_size`, `normalize_pt`, `logger`, `seed`) via kwargs.
+
     Returns:
-        DataLoader: Torch DataLoader object that yields batches of data.
+        DataLoader: yields (jets, labels) batches; batching is done by the dataset.
     '''
     print(f"Will read only {input_shape[0]} particles per jet")
     dset = CASEJetClassDataset(input_shape=input_shape,train=train,**kwargs)
