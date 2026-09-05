@@ -3,9 +3,10 @@
 Companion to `AUDIT.md`, section 3.2 ("modular, plug-and-play circuit design"). Part A is
 background for the design. Part B covers the remaining deliverables, ordered by dependency.
 
-**Status:** D1, D2, D4, D5, D7, D9, D11 are implemented — see `refactored.MD`. This file covers
-what's left: D10. (D6 and D8's QFI-specific pieces were implemented, then removed entirely — see
-`future.MD`.)
+**Status:** all deliverables (D1, D2, D4, D5, D7, D9, D10, D11) are implemented — see
+`refactored.MD`. Nothing remains open in this document. (D6 and D8's QFI-specific pieces were
+implemented, then removed entirely — see `future.MD`.) The rest of this file is background (Part
+A, still accurate) and a list of flagged-but-unfixed findings, kept for reference.
 
 **Scope of this pass: VQC only.** QCNN (`_qcnn_implementation`/`_qcnn_state_circuit`,
 `circuit_type='CNN'`) is removed from the live code as part of D9, not merely left unmigrated.
@@ -72,34 +73,32 @@ round-trips losslessly through the existing checkpoint mechanism, and PennyLane'
 
 ---
 
-## Part B — Remaining deliverables
-
-D1, D2, D4, D5, D7, D9, D11 are done (`refactored.MD`). D10 needs D9 (done — unblocked).
-
-```
-D10 (e2e run)
-```
-
-### D10 — End-to-end validation run
-
-**Depends on:** D9. **Files:** none (a training run, not a code change).
-
-Re-run one short training job (a handful of epochs, small config) end to end.
-
-**Done when:** the loss curve and checkpoint format match a pre-refactor run of the same config
-(checkpoint content adjusted for `CircuitWeights` serialization, per D7).
-
----
-
 ## Other flagged, unfixed findings
 
-QFI/metric-tensor computation (`quantum_fisher`, `run_fisher_computation`, and the `_state_build`
-state-circuit derivation D6 built for it) was removed entirely, not fixed — see `future.MD` for
-why and what re-implementing it later will need.
+All from verification passes during this refactor; none are fixed, all are pre-existing and
+out of scope for a circuit-module refactor.
 
-**Still open, unrelated to QFI:** `QuantumTrainer.iteration()`'s validation branch (`train=False`)
-does `float(scores)`, which only works when `scores` is a single value — i.e. `batch_size=1`.
-Confirmed pre-existing (untouched by any change this refactor made). Matches `evaluate.py`'s own
-documented constraint ("`run_inference` expects `batch_size=1`"), but `run_training_loop`'s
-validation phase calls the same code path with `cfg.batch_size` (100 by default in
-`VQC/base.yaml`) — would already have failed there before this refactor.
+- QFI/metric-tensor computation (`quantum_fisher`, `run_fisher_computation`, and the
+  `_state_build` state-circuit derivation D6 built for it) was removed entirely, not fixed — see
+  `future.MD` for why and what re-implementing it later will need.
+- `QuantumTrainer.iteration()`'s validation branch (`train=False`) does `float(scores)`, which
+  only works when `scores` is a single value — i.e. `batch_size=1`. Matches `evaluate.py`'s own
+  documented constraint ("`run_inference` expects `batch_size=1`"), but `run_training_loop`'s
+  validation phase calls the same code path with `cfg.batch_size` (100 by default in
+  `VQC/base.yaml`). Confirmed by a dedicated D10 test (`tests/test_end_to_end.py`).
+- `QuantumClassifier.run_inference()` reads `self.total_batches`, which is only ever set inside
+  `__init__`'s `if test:` branch — both `train.py` and `evaluate.py` construct with `test=False`,
+  so `evaluate.py`'s inference pipeline cannot run as written (`AttributeError`). Confirmed by a
+  dedicated D10 test. See `AUDIT.md` section 2.
+- `train.py`'s resume path (`cfg.resume`) does `ut.Unpickle(model_path)` without unwrapping
+  `['weights']`, so `init_weights` ends up as the raw checkpoint dict, not a `CircuitWeights` —
+  confirmed by a dedicated D10 test to fail with `AttributeError` on the first training step.
+- `losses.probabilistic_loss` indexes its circuit output as a 2D (batch x class) array, but VQC's
+  circuit returns one scalar Hamiltonian expval per sample — confirmed by a dedicated D10 test to
+  raise `IndexError`. `cfg.loss='prob'` has likely never worked against `VQCCircuit`.
+- `QuantumTrainer.save()`'s optimizer-state JSON dump fails for any non-scalar weight shape
+  (`fm`/`sm` are numpy arrays once weights are multi-dimensional — true for both the old flat
+  vector and the new `CircuitWeights.rot`). Already caught by an existing `try/except` in `save()`
+  that prints and continues, so it doesn't crash training — training/validation loss and the
+  actual weight checkpoint are unaffected, only the separate optimizer-state file silently isn't
+  written. Not previously flagged; observed while running D10's tests.

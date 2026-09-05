@@ -84,6 +84,7 @@ Called modules and their role:
 | `quantum/math_functions.py` | `transform()` and `double_sided_leaky_relu()` are defined but not called anywhere in `losses.py` (both call sites are commented out). |
 | `__pycache__/` dirs | Committed working-tree clutter (`quantum/__pycache__/*.pyc` for 3 Python versions) — already covered by `.gitignore`, just not cleaned locally. |
 | `train.py:20` hydra decorator | `@hydra.main(config_path="./hydra_configs/VQC", config_name="config")` — no `config.yaml` has ever existed in this repo (only `base.yaml`), so `python train.py` fails at startup with Hydra unable to resolve the config. `evaluate.py:28` uses the correct `config_name="base"`. Flagged, not fixed — a one-line change (`"config"` -> `"base"`), but out of scope for the circuit refactor. |
+| `QuantumClassifier.run_inference` | `self.total_batches` is only ever set inside `__init__`'s `if test:` branch. Both `train.py` and `evaluate.py` construct with `test=False`, so `self.total_batches` is never set, and `run_inference`'s `tqdm(dataloader, total=self.total_batches)` unconditionally raises `AttributeError`. Confirmed by direct test (D10, `tests/test_end_to_end.py`) — `evaluate.py`'s inference pipeline cannot run as written. Pre-existing, unrelated to the circuit refactor; flagged, not fixed. |
 
 The three `test*.py` scripts appear to be inference/ROC-evaluation scripts that have not been
 updated since `quantum/architectures.py` was refactored from an autoencoder (`QuantumAutoencoder`,

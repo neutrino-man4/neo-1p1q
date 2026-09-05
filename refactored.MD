@@ -433,3 +433,57 @@ confirmed True; a repo-wide search for `QFI`/`metric_tensor`/`quantum_fisher`/`f
 untouched legacy pipeline whose `metric_tensor` reference is PennyLane's `QNGOptimizer` machinery,
 not the QFI-matrix feature being removed here) and the design docs themselves; `train.py` still
 fails at exactly the same pre-existing `config_name` bug.
+
+## D10 — End-to-end validation
+
+**Commits:** `83ced05` (`tests/test_circuit_base.py`), `61a20f9` (`tests/test_end_to_end.py`).
+**Files:** `tests/test_circuit_base.py`, `tests/test_end_to_end.py` (new).
+
+`train.py` itself can't be run end to end — its pre-existing, deliberately-unfixed `config_name`
+bug means it fails at startup before touching any of this refactor's code. D10 instead exercises
+the same pieces `train.py`/`evaluate.py` wire together, built directly (no Hydra): a real
+`QuantumClassifier` + `QuantumTrainer`, a real multi-epoch `run_training_loop()`, real checkpoint
+files on disk, and `evaluate.py`'s own inference call sequence.
+
+**New regression tests added (`test_circuit_base.py`), previously only checked ad hoc:**
+`RotationShape.validate()` raises on layer/wire overrun and accepts in-bounds calls (D1);
+`VQCCircuit.measure()` raises on a `hamiltonian_coeffs`/wires length mismatch and accepts the
+default length (D2); `registry.get()` raises `ValueError` on an unknown `circuit_type` and returns
+the right instance for `'normal'` (D4).
+
+**End-to-end tests added (`test_end_to_end.py`):**
+- `run_training_loop()` runs for real (2 epochs, batch_size=1): history lengths and values are
+  sane, per-epoch checkpoints and `trained_model.pickle` are written to disk.
+- A checkpoint saved by a real training run reloads via `load_weights()` into a fresh
+  `QuantumClassifier` with the correct `rot` shape and `requires_grad` re-enabled, and one more
+  training step from those reloaded weights runs without error.
+- `evaluate.py`'s own call sequence (`QuantumClassifier(test=False)` -> `load_weights()` ->
+  `run_inference()`) reproduced directly.
+
+**New finding, confirmed by the tests above (not fixed, see `REFACTOR.md`):**
+`QuantumClassifier(test=False)` — what both `train.py` and `evaluate.py` actually construct —
+never sets `self.total_batches` (only `__init__`'s `if test:` branch does), and
+`run_inference()` unconditionally reads it for `tqdm`'s `total=`. `evaluate.py`'s inference
+pipeline cannot run as written; confirmed via `assertRaises(AttributeError)` against a real
+trained checkpoint. A second test confirms the rest of `run_inference()` is otherwise sound once
+`total_batches` is set by hand as a workaround.
+
+**Three more pre-existing bugs turned from inference into concrete, reproduced evidence:**
+- Validation at `batch_size > 1` crashes inside a real `run_training_loop()` run (`TypeError`),
+  not just in an isolated `iteration()` call — same root cause flagged after D9 verification.
+- `train.py`'s resume path (`ut.Unpickle(model_path)` without `['weights']`) really does hand a
+  raw `dict` to `QuantumTrainer` as `init_weights`, and the first training step really does raise
+  `AttributeError: 'dict' object has no attribute 'aux'`.
+- `probabilistic_loss` really does raise `IndexError` against `VQCCircuit`'s scalar-per-sample
+  output — `cfg.loss='prob'` has likely never worked with this circuit.
+
+**Also observed, not previously flagged:** `QuantumTrainer.save()`'s optimizer-state JSON dump
+(`Error saving optimizer state: Object of type ndarray is not JSON serializable`) fails for any
+multi-dimensional weight shape — true before this refactor too (a flat vector's Adam moments are
+still an ndarray). Already caught by `save()`'s own `try/except`, so it doesn't crash training or
+affect the actual weight checkpoint — only the separate optimizer-state file silently isn't
+written.
+
+**Verified:** all 16 tests across the full suite pass (`unittest discover -s tests -t .`); no
+stray files left in the repo after a run (temp directories used throughout, auto-cleaned); every
+touched/new file compiles.
