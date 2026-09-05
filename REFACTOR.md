@@ -3,8 +3,9 @@
 Companion to `AUDIT.md`, section 3.2 ("modular, plug-and-play circuit design"). Part A is
 background for the design. Part B covers the remaining deliverables, ordered by dependency.
 
-**Status:** D1, D2, D4, D5, D6, D7, D8, D9, D11 are implemented — see `refactored.MD`. This file
-covers what's left: D10 and D12 (proposed, not yet decided).
+**Status:** D1, D2, D4, D5, D7, D9, D11 are implemented — see `refactored.MD`. This file covers
+what's left: D10. (D6 and D8's QFI-specific pieces were implemented, then removed entirely — see
+`future.MD`.)
 
 **Scope of this pass: VQC only.** QCNN (`_qcnn_implementation`/`_qcnn_state_circuit`,
 `circuit_type='CNN'`) is removed from the live code as part of D9, not merely left unmigrated.
@@ -65,22 +66,18 @@ two explicit pieces:
 `weights.aux['bias']` (today's `sum(weights[-6:-1])`) is read in `losses.py`, not inside the
 circuit — same as today, just a named lookup instead of a slice (D9, below).
 
-D6/D7/D8 (all done, see `refactored.MD`) confirmed the rest of A3 works end to end: a
-`CircuitWeights` instance derives its QFI state-circuit generically, matches today's hardcoded
-methods bit-for-bit, and round-trips losslessly through the existing checkpoint mechanism —
-including PennyLane's optimizer accepting `rot` plus several named aux scalars as separate
-trainable arguments in one `step_and_cost` call.
+D7 (done, see `refactored.MD`) confirmed the rest of A3 works end to end: `CircuitWeights`
+round-trips losslessly through the existing checkpoint mechanism, and PennyLane's optimizer accepts
+`rot` plus several named aux scalars as separate trainable arguments in one `step_and_cost` call.
 
 ---
 
 ## Part B — Remaining deliverables
 
-D1, D2, D4, D5, D6, D7, D8, D9, D11 are done (`refactored.MD`). D10 needs D9 (done — unblocked).
-D12 is a proposed addendum, independent of D10, not yet decided.
+D1, D2, D4, D5, D7, D9, D11 are done (`refactored.MD`). D10 needs D9 (done — unblocked).
 
 ```
 D10 (e2e run)
-D12 (QFI/CircuitWeights compatibility, proposed, independent)
 ```
 
 ### D10 — End-to-end validation run
@@ -92,28 +89,17 @@ Re-run one short training job (a handful of epochs, small config) end to end.
 **Done when:** the loss curve and checkpoint format match a pre-refactor run of the same config
 (checkpoint content adjusted for `CircuitWeights` serialization, per D7).
 
-### D12 — QFI/CircuitWeights compatibility *(proposed, not yet decided)*
+---
 
-**Depends on:** nothing. **Files:** `quantum/architectures.py` (`quantum_fisher`,
-`run_fisher_computation`).
+## Other flagged, unfixed findings
 
-**New finding (surfaced while verifying D9):** these two methods still assume a flat weight
-vector — `quantum_fisher` slices `full_qfi[:3*N*self.num_layers, :3*N*self.num_layers]` and hands
-`self.current_weights` to `qml.metric_tensor`/`qml.adjoint_metric_tensor` as one differentiable
-argument. Confirmed broken by direct test: calling `quantum_fisher` with a real `CircuitWeights`
-raises `AttributeError: 'ArrayBox' object has no attribute 'item'` inside PennyLane's own
-differentiation machinery. Out of D9's declared scope (not listed in its file list), so left
-unfixed; fixing it needs the same multi-arg differentiation pattern D7 confirmed for the optimizer
-(`rot` plus named aux values passed as separate args to `metric_tensor`), and the `3*N*num_layers`
-slice replaced with a direct `rotation_shape`-derived size.
+QFI/metric-tensor computation (`quantum_fisher`, `run_fisher_computation`, and the `_state_build`
+state-circuit derivation D6 built for it) was removed entirely, not fixed — see `future.MD` for
+why and what re-implementing it later will need.
 
-**Also found, not fixed (pre-existing, unrelated to D9):** `QuantumTrainer.iteration()`'s
-validation branch (`train=False`) does `float(scores)`, which only works when `scores` is a single
-value — i.e. `batch_size=1`. Confirmed this line is untouched by any D9 change. Matches
-`evaluate.py`'s own documented constraint ("`run_inference` expects `batch_size=1`"), but
-`run_training_loop`'s validation phase calls the same code path with `cfg.batch_size` (100 by
-default in `VQC/base.yaml`) — would already have failed there before this refactor. Not part of
-D12; noted here since it surfaced during the same verification pass.
-
-**Done when:** `quantum_fisher`/`run_fisher_computation` run against a `CircuitWeights` instance
-without error and reproduce the pre-refactor QFI matrix for an equivalent flat-weight input.
+**Still open, unrelated to QFI:** `QuantumTrainer.iteration()`'s validation branch (`train=False`)
+does `float(scores)`, which only works when `scores` is a single value — i.e. `batch_size=1`.
+Confirmed pre-existing (untouched by any change this refactor made). Matches `evaluate.py`'s own
+documented constraint ("`run_inference` expects `batch_size=1`"), but `run_training_loop`'s
+validation phase calls the same code path with `cfg.batch_size` (100 by default in
+`VQC/base.yaml`) — would already have failed there before this refactor.

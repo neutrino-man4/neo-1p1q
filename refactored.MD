@@ -202,6 +202,11 @@ via `measure_override` gives the state version for free. Not wired into `set_cir
 
 **Verified:** matches `_vqc_state_circuit`'s output exactly (see D8's `test_state_matches`).
 
+**Later removed (2026-09-05):** `_state_build` and everything that wired to it existed solely to
+serve `quantum_fisher()`/`run_fisher_computation()`, which turned out to be broken independent of
+this refactor. Removed along with the rest of QFI — see `future.MD`. This entry is kept as the
+historical record of what was built and verified at the time.
+
 ## D7 — Trainer support for split weights
 
 **Commits:** `44b4551` (checkpoint round-trip test), `a89df22` (`load_weights` support). **Files:**
@@ -270,6 +275,10 @@ bug introduced by this refactor — the old code was never runnable at other qub
 measurement.
 
 **Verified:** both tests pass. This is the actual safety net gating D9 (not just code inspection).
+
+**`test_state_matches` later removed (2026-09-05):** its subject, `_state_build`, was removed along
+with the rest of QFI — see the D6 note above and `future.MD`. `test_expval_matches` (the real
+circuit-body/wiring guard, unrelated to QFI) remains and still passes.
 
 ## D9 — Switchover
 
@@ -376,3 +385,51 @@ session. Now-unused `sys` import removed from `losses.py`.
 Registered: ['MSE', 'BCE']` from both `VQC_cost` and `batched_VQC_cost`; all 3 existing tests still
 pass; `train.py`/`evaluate.py`/`quantum/architectures.py` all still compile; `train.py` still fails
 at exactly the same pre-existing `config_name` bug.
+
+## D12 (attempted) — QFI removed entirely instead of fixed
+
+**Commits:** `f5151b8` (`architectures.py` + `hydra_configs/QFI/` + `plotters/plot_utils.py`),
+`ba81d28` (test file). **Files:** `quantum/architectures.py`, `hydra_configs/QFI/base.yaml`
+(deleted), `plotters/plot_utils.py` (deleted), `tests/test_circuit_parity.py`.
+
+D12 was originally scoped as "make `quantum_fisher`/`run_fisher_computation` work with
+`CircuitWeights`." Verifying that before implementing (this session's usual practice) overturned
+the diagnosis: I reconstructed the literal pre-D9 `_vqc_state_circuit` body (flat weight vector,
+no `CircuitWeights` involved) and ran it through `qml.metric_tensor`/`qml.adjoint_metric_tensor`
+at `batch_size=1` — the only way `quantum_fisher()` is ever called. **It fails identically, with
+the same `AttributeError: 'ArrayBox' object has no attribute 'item'`, on the old, untouched,
+flat-vector code.** The real cause is `encode()`'s `if inputs.shape[0] == 1: ... .item()` branch
+breaking under PennyLane's QFI tracing, which wraps classical preprocessing in autograd `ArrayBox`
+even for arguments not being differentiated — nothing to do with the weight representation, and
+predates this entire refactor. Removing the `.item()` calls clears that crash but immediately
+surfaces at least two more distinct errors (a missing auxiliary wire for `metric_tensor(approx=None)`,
+and an unexplained `AttributeError: 'tuple' object has no attribute 'shape'` for `approx='block-diag'`
+and `adjoint_metric_tensor`), left un-root-caused.
+
+Given this, the user chose to remove QFI/metric-tensor computation entirely rather than
+investigate or attempt a fix — see `future.MD`. Removed:
+- `QuantumClassifier.quantum_fisher()`, `run_fisher_computation()`.
+- `_state_build`, `state_circuit_qnode`, `state_circuit()` — these existed solely to serve QFI (no
+  other caller anywhere in the codebase, confirmed by search).
+- The `fisher_computation`/`approx` constructor params and the `aux_wire`/auxiliary-wire branch in
+  `_initialize_wires()` (the ancilla-related `use_ancilla`/`truth_wire` branch, unrelated to QFI,
+  was left alone).
+- `hydra_configs/QFI/base.yaml` (the whole directory) and `plotters/plot_utils.py` (its only
+  function plotted a QFI matrix; unimported anywhere, confirmed by search).
+- `tests/test_circuit_parity.py`'s `test_state_matches` (its subject, `_state_build`, is gone;
+  `test_expval_matches` is unrelated to QFI and stays).
+
+**Kept, deliberately:** `Circuit.build()`'s generic `measure_override` parameter (in
+`quantum/circuits/base.py`) — it doesn't mention QFI anywhere in its own code, is zero-cost, and
+is exactly the hook a future metric-tensor re-implementation would still want; removing it would
+make "implemented later" (see `future.MD`) harder, not easier.
+
+**Verified:** `quantum/architectures.py` compiles and imports; a full `set_circuit` -> weight
+construction -> train step -> validation step round trip still runs and produces the exact same
+cost value as before (`0.7928011381077116`), confirming zero behavioral change to the parts that
+remain; `no hasattr(VQC, 'state_circuit_qnode')` and `no hasattr(VQC, 'quantum_fisher')` both
+confirmed True; a repo-wide search for `QFI`/`metric_tensor`/`quantum_fisher`/`fisher_computation`/
+`adjoint_metric` turns up nothing left in any `.py`/`.yaml` file except `auto_qml.py` (a separate,
+untouched legacy pipeline whose `metric_tensor` reference is PennyLane's `QNGOptimizer` machinery,
+not the QFI-matrix feature being removed here) and the design docs themselves; `train.py` still
+fails at exactly the same pre-existing `config_name` bug.
