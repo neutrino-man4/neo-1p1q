@@ -35,4 +35,8 @@ load: false # only for testing
 scheme: 'min' # only for testing
 log_wandb: false # only for testing
 load_best: false # only for testing
+operations_per_qubit: 3 # VQC's RZ/RY/RX per wire per layer
+aux_weights:
+  scale_factor: 1.0
+  bias: 0.1
 circuit_type: 'normal'
