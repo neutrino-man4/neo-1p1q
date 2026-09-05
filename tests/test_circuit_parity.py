@@ -54,6 +54,16 @@ class TestVQCCircuitWiring(unittest.TestCase):
         standalone_out = standalone(self.weights, self.inputs, self.wires)
         self.assertAlmostEqual(float(wired_out), float(standalone_out), places=10)
 
+    def test_expval_golden_value(self) -> None:
+        """
+        Pin the exact analytic expval for this fixed seed/weights/input. Guards
+        against cross-version drift in PennyLane's gate math -- default.qubit
+        with shots=None is exact linear algebra, so this constant must hold on
+        any PennyLane version. Reference computed on PennyLane 0.37.0.
+        """
+        out = float(self.qc.circuit(self.weights, self.inputs))
+        self.assertAlmostEqual(out, 0.034755910654483246, places=12)
+
 
 if __name__ == '__main__':
     unittest.main()
