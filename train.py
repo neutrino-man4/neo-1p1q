@@ -13,6 +13,7 @@ import helpers.utils as ut
 import case_reader as cr
 import helpers.path_setter as ps
 import quantum.losses as loss
+from quantum.circuits.base import CircuitWeights
 from loguru import logger
 import wandb
 
@@ -104,24 +105,14 @@ def main(cfg: DictConfig):
         backend_name=cfg.backend,
         test=False  # Don't set circuit immediately
     )
-    VQC.set_circuit(circuit_type=cfg.circuit_type)
-
-    if cfg.extra_weights > 8:
-        print("No. of extra weights = ", cfg.extra_weights)
-        print("Are you sure? Press ctrl+c to cancel within 5s")
-        time.sleep(5)
-
-    # Calculate number of weights based on the VQC instance
-    NUM_WEIGHTS = len(VQC.auto_wires) * 3 * cfg.num_layers + cfg.extra_weights  # Extra weight for the bias term in VQC + scale factor for pT
-    if cfg.circuit_type == 'CNN':
-        NUM_WEIGHTS = 2 * cfg.num_layers + cfg.extra_weights
+    VQC.set_circuit(circuit_type=cfg.circuit_type, operations_per_qubit=cfg.operations_per_qubit)
 
     if not cfg.resume:
-        init_weights = np.random.uniform(0, np.pi, size=(NUM_WEIGHTS,))
-        init_weights[-cfg.extra_weights:-1] = 0.1  # Initialize the last few weights to 1.0 for better training stability
-        #init_weights[-1] = 1.0  # Initialize bias term to 0
-        # Convert to pennylane array with requires_grad
-        init_weights = np.array(init_weights, requires_grad=True)
+        shape = VQC._impl.rotation_shape(len(VQC.auto_wires), cfg.num_layers)
+        rot = np.array(np.random.uniform(0, np.pi, size=(shape.L, shape.N, shape.R)), requires_grad=True)
+        aux = {**VQC._impl.aux_defaults, **dict(cfg.get('aux_weights', {}))}
+        aux = {k: np.array(v, requires_grad=True) for k, v in aux.items()}
+        init_weights = CircuitWeights(rot=rot, aux=aux)
 
     train_max_n = cfg.train_n
     valid_max_n = cfg.valid_n
