@@ -18,10 +18,15 @@ import numpy as onp
 import pennylane as qml
 import pennylane.numpy as np
 
+import glob
+
+import case_reader as cr
 import helpers.utils as ut
 import quantum.architectures as arch
 import quantum.losses as loss
 from quantum.circuits.base import CircuitWeights
+
+_JETCLASS_DIR = '/ceph/abal/JetClass'
 
 
 class _FixedBatches:
@@ -236,6 +241,47 @@ class TestKnownPreExistingBugs(unittest.TestCase):
                 weights, inputs=data, quantum_circuit=vqc.circuit,
                 labels=onp.array([0, 1]), return_scores=True,
             )
+
+
+@unittest.skipUnless(
+    os.path.isdir(os.path.join(_JETCLASS_DIR, 'test', 'TTBar_'))
+    and os.path.isdir(os.path.join(_JETCLASS_DIR, 'test', 'ZJetsToNuNu')),
+    "JetClass data not available",
+)
+class TestBalancedJetClassLoader(unittest.TestCase):
+    """CASEJetClassDataset must read equal signal/background and label them correctly."""
+
+    def _files(self, sample):
+        return sorted(glob.glob(os.path.join(_JETCLASS_DIR, 'test', sample, '*.h5')))
+
+    def test_equal_split_and_both_labels(self) -> None:
+        loader = cr.OneP1QDataLoader(
+            signal_filelist=self._files('TTBar_'),
+            background_filelist=self._files('ZJetsToNuNu'),
+            n_signal=40, n_background=40,
+            batch_size=16, input_shape=(4, 3), train=True, normalize_pt=False, seed=0,
+        )
+        total, counts = 0, {0: 0, 1: 0}
+        first_shape = None
+        for data, labels in loader:
+            if first_shape is None:
+                first_shape = tuple(data.shape[1:])
+            for lbl in labels.tolist():
+                counts[int(lbl)] += 1
+            total += data.shape[0]
+        self.assertEqual(total, 80)
+        self.assertEqual(counts, {0: 40, 1: 40})
+        self.assertEqual(first_shape, (4, 3))
+
+    def test_signal_label_is_one(self) -> None:
+        """A signal-only loader yields only label 1; background-only yields only label 0."""
+        sig = cr.OneP1QDataLoader(
+            signal_filelist=self._files('TTBar_'), background_filelist=self._files('TTBar_'),
+            n_signal=20, n_background=0, batch_size=20, input_shape=(4, 3), seed=0,
+        )
+        labels = [int(x) for _, lbls in sig for x in lbls.tolist()]
+        self.assertEqual(set(labels), {1})
+        self.assertEqual(len(labels), 20)
 
 
 if __name__ == '__main__':
