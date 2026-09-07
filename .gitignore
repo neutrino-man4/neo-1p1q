@@ -4,6 +4,12 @@
 
 # local-only files
 problems.MD
+AUDIT.md
+auto_qml.py
+data_reader.py
+pip_install_kokkos.py
+test.sh
+train.sh
 
 # secrets / local-only
 .env
@@ -13,6 +19,9 @@ condor/.Xauthority
 # python cache
 __pycache__/
 *.py[cod]
+.vscode/
+.codex/
+.claude/
 
 # large or regenerable data and outputs
 outputs/
