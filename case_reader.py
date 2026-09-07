@@ -180,6 +180,10 @@ class CASEJetClassDataset(IterableDataset):
             batch_labels = self._labels[i:i + self.batch_size]
             yield np.array(batch_data, requires_grad=False), np.array(batch_labels, dtype=int, requires_grad=False)
 
+    def __len__(self) -> int:
+        """Return the number of batches yielded, including a partial final batch."""
+        return (len(self._data) + self.batch_size - 1) // self.batch_size
+
 
 def OneP1QDataLoader(input_shape:tuple[int]=(100, 3),train:bool=True,**kwargs) -> DataLoader:
     '''
@@ -253,5 +257,3 @@ def select_subjet_constituents(jet_etaphipt, num_PFCands_subleading_jet, evt_sub
     else:
         raise NameError("Selection must be either random or equal")
     # Step 2: Create a mask to select particles from each jet
-    
-    

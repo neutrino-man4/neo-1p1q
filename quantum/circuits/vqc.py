@@ -42,11 +42,10 @@ class VQCCircuit(CircuitBase):
         n_wires = len(wires)
         sf = 2 * np.pi * sigmoid(weights.aux['scale_factor']) + 1
         for w in wires:
-            zenith  = np.squeeze(inputs[:, w + layer * n_wires, self.index['eta']])
-            azimuth = np.squeeze(inputs[:, w + layer * n_wires, self.index['phi']])
-            radius  = np.squeeze(inputs[:, w + layer * n_wires, self.index['pt']])
-            if inputs.shape[0] == 1:
-                zenith, azimuth, radius = zenith.item(), azimuth.item(), radius.item()
+            particle = w + layer * n_wires
+            zenith = inputs[:, particle, self.index['eta']]
+            azimuth = inputs[:, particle, self.index['phi']]
+            radius = inputs[:, particle, self.index['pt']]
             qml.RY(sf * radius * zenith, wires=w)
             qml.RX(sf * radius * azimuth, wires=w)
 

@@ -68,10 +68,18 @@ def main(cfg: DictConfig) -> None:
         )
     logger.info(f"Test set: {cfg.n_signal_test} '{cfg.signal}' + {cfg.n_background_test} '{cfg.background}' jets from {test_split}/")
 
+    required_particles = len(VQC.auto_wires) * VQC.num_layers
+    num_particles = getattr(cfg, 'num_particles', required_particles)
+    if num_particles < required_particles:
+        raise ValueError(
+            f"The {cfg.num_layers}-layer circuit requires at least "
+            f"{required_particles} particles, but num_particles={num_particles}"
+        )
+
     test_loader = cr.OneP1QDataLoader(
         signal_filelist=test_sig, background_filelist=test_bg,
         n_signal=cfg.n_signal_test, n_background=cfg.n_background_test,
-        input_shape=(len(VQC.auto_wires), 3),
+        input_shape=(num_particles, 3),
         train=False,
         normalize_pt=cfg.norm_pt,
         logger=logger,

@@ -123,7 +123,13 @@ def main(cfg: DictConfig):
     _class_files = lambda split, sample: sorted(glob.glob(os.path.join(cfg.data_dir, split, sample, '*.h5')))
     train_sig, train_bg = _class_files(train_split, cfg.signal), _class_files(train_split, cfg.background)
     val_sig, val_bg = _class_files(val_split, cfg.signal), _class_files(val_split, cfg.background)
-    num_particles = getattr(cfg, 'num_particles', len(VQC.auto_wires))
+    required_particles = len(VQC.auto_wires) * VQC.num_layers
+    num_particles = getattr(cfg, 'num_particles', required_particles)
+    if num_particles < required_particles:
+        raise ValueError(
+            f"The {cfg.num_layers}-layer circuit requires at least "
+            f"{required_particles} particles, but num_particles={num_particles}"
+        )
     logger.info(f"Number of particles to load: {num_particles}")
 
     if not (train_sig and train_bg and val_sig and val_bg):

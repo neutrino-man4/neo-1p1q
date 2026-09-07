@@ -5,8 +5,7 @@ same pieces train.py/evaluate.py wire together -- QuantumTrainer's full
 run_training_loop, a real checkpoint save/load round trip, and the
 evaluate.py-equivalent inference pipeline -- built directly, without hydra.
 
-Includes tests expected to fail: they pin down bugs that are pre-existing
-and out of this refactor's scope (flagged, not fixed, see REFACTOR.md).
+Includes regression tests for the training, validation, and inference paths.
 Author: Aritra Bal (ETP)
 2026-09-05
 """
@@ -131,6 +130,45 @@ class TestFullTrainingLoop(unittest.TestCase):
             cost = trainer2.iteration(data, labels=labels, train=True)
             self.assertTrue(onp.isfinite(cost))
 
+    def test_batched_training_and_validation_include_partial_batch(self) -> None:
+        """Batch scores retain their dimension and epoch losses weight every sample equally."""
+        with tempfile.TemporaryDirectory() as save_dir:
+            vqc, trainer = _build_trainer(save_dir, batch_size=2, epochs=1)
+            data_batches = [
+                np.array(onp.random.uniform(-1, 1, size=(2, 4, 3))),
+                np.array(onp.random.uniform(-1, 1, size=(1, 4, 3))),
+            ]
+            label_batches = [np.array([0, 1]), np.array([1])]
+            train_loader = _FixedBatches(data_batches, label_batches)
+            val_loader = _FixedBatches(data_batches, label_batches)
+
+            batch_losses = []
+            for data, labels in val_loader:
+                batch_loss, scores = trainer.iteration(data, labels=labels, train=False)
+                batch_losses.append(batch_loss)
+                self.assertEqual(scores.shape, (len(labels),))
+                self.assertAlmostEqual(
+                    batch_loss,
+                    float(np.mean((labels - scores) ** 2)),
+                )
+                serial_scores = np.concatenate([
+                    trainer.iteration(
+                        data[i:i + 1], labels=labels[i:i + 1], train=False
+                    )[1]
+                    for i in range(len(labels))
+                ])
+                onp.testing.assert_allclose(scores, serial_scores)
+            expected_initial_val_loss = (
+                batch_losses[0] * 2 + batch_losses[1]
+            ) / 3
+
+            history = trainer.run_training_loop(train_loader, val_loader)
+
+            self.assertAlmostEqual(history['val'][0], expected_initial_val_loss)
+            self.assertEqual(len(history['train']), 1)
+            self.assertEqual(len(history['val']), 2)
+            self.assertTrue(onp.isfinite(history['train'][0]))
+
 
 class TestEvaluateEquivalentInference(unittest.TestCase):
     """D10: reproduce evaluate.py's own pipeline against a real saved checkpoint."""
@@ -184,15 +222,6 @@ class TestKnownPreExistingBugs(unittest.TestCase):
     D10: pin down, with concrete reproductions, bugs already flagged (not fixed) in
     REFACTOR.md/AUDIT.md as pre-existing and out of this refactor's scope.
     """
-
-    def test_validation_batch_size_above_one_crashes(self) -> None:
-        """QuantumTrainer.iteration()'s validation branch only works at batch_size=1."""
-        with tempfile.TemporaryDirectory() as save_dir:
-            vqc, trainer = _build_trainer(save_dir, batch_size=1, epochs=1)
-            train_loader = _make_batches(2, batch_size=1, n_qubits=4, n_layers=1)
-            val_loader_batch2 = _make_batches(2, batch_size=2, n_qubits=4, n_layers=1)
-            with self.assertRaises(TypeError):
-                trainer.run_training_loop(train_loader, val_loader_batch2)
 
     def test_resume_path_passes_raw_dict_not_circuitweights(self) -> None:
         """train.py's resume branch does ut.Unpickle(model_path) without ['weights'],
@@ -252,19 +281,23 @@ class TestBalancedJetClassLoader(unittest.TestCase):
             signal_filelist=self._files('TTBar_'),
             background_filelist=self._files('ZJetsToNuNu'),
             n_signal=40, n_background=40,
-            batch_size=16, input_shape=(4, 3), train=True, normalize_pt=False, seed=0,
+            batch_size=18, input_shape=(4, 3), train=True, normalize_pt=False, seed=0,
         )
         total, counts = 0, {0: 0, 1: 0}
         first_shape = None
+        batch_sizes = []
         for data, labels in loader:
             if first_shape is None:
                 first_shape = tuple(data.shape[1:])
+            batch_sizes.append(data.shape[0])
             for lbl in labels.tolist():
                 counts[int(lbl)] += 1
             total += data.shape[0]
         self.assertEqual(total, 80)
         self.assertEqual(counts, {0: 40, 1: 40})
         self.assertEqual(first_shape, (4, 3))
+        self.assertEqual(len(loader), 5)
+        self.assertEqual(batch_sizes, [18, 18, 18, 18, 8])
 
     def test_signal_label_is_one(self) -> None:
         """A signal-only loader yields only label 1; background-only yields only label 0."""

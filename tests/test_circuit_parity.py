@@ -52,7 +52,9 @@ class TestVQCCircuitWiring(unittest.TestCase):
         )
         wired_out = self.qc.circuit(self.weights, self.inputs)
         standalone_out = standalone(self.weights, self.inputs, self.wires)
-        self.assertAlmostEqual(float(wired_out), float(standalone_out), places=10)
+        self.assertEqual(wired_out.shape, (1,))
+        self.assertEqual(standalone_out.shape, (1,))
+        self.assertAlmostEqual(float(wired_out[0]), float(standalone_out[0]), places=10)
 
     def test_expval_golden_value(self) -> None:
         """
@@ -61,7 +63,7 @@ class TestVQCCircuitWiring(unittest.TestCase):
         with shots=None is exact linear algebra, so this constant must hold on
         any PennyLane version. Reference computed on PennyLane 0.37.0.
         """
-        out = float(self.qc.circuit(self.weights, self.inputs))
+        out = float(self.qc.circuit(self.weights, self.inputs)[0])
         self.assertAlmostEqual(out, 0.034755910654483246, places=12)
 
 

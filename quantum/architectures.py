@@ -137,11 +137,14 @@ class QuantumClassifier:
         self._impl = registry.get(circuit_type, self.num_layers)
         if operations_per_qubit is not None:
             self._impl.operations_per_qubit = operations_per_qubit
-        self.circuit = qml.QNode(
+        qnode = qml.QNode(
             lambda weights, inputs: self._impl.build(weights, inputs, self.auto_wires),
             self.device,
             interface=self.backend
         )
+        # Expand before differentiation so finite-shot parameter-shift supports
+        # broadcast inputs whose encoded angles also contain trainable values.
+        self.circuit = qml.transforms.broadcast_expand(qnode)
 
     def fetch_circuit(self) -> qml.QNode:
         """
@@ -238,7 +241,7 @@ class QuantumClassifier:
                 )
 
                 all_costs.append(float(cost))
-                all_scores.append(float(score))
+                all_scores.append(float(np.reshape(score, (-1,))[0]))
                 all_labels.append(float(chunk_labels[i]))
         # Convert to numpy arrays
         costs = np.array(all_costs)    # Shape: (N_inputs,)
@@ -326,7 +329,7 @@ class QuantumTrainer:
         data: np.ndarray, 
         labels: np.ndarray, 
         train: bool = False
-    ) -> Union[float, Tuple[float, float]]:
+    ) -> Union[float, Tuple[float, np.ndarray]]:
         """
         Perform a single training or validation iteration.
         
@@ -371,7 +374,7 @@ class QuantumTrainer:
                 return_scores=True,
                 loss_type=self.loss_type
             )
-            return float(cost), float(scores)
+            return float(cost), np.reshape(np.array(scores, requires_grad=False), (-1,))
     
     def is_evictable_job(self, seed: Optional[Any] = None) -> None:
         """
@@ -403,7 +406,12 @@ class QuantumTrainer:
         last_decay = 0
         complete = False
         
-        for n_epoch in tqdm(range(self.epochs + 1)):
+        epoch_progress = tqdm(
+            range(self.epochs + 1),
+            desc="Epochs",
+            unit="epoch",
+        )
+        for n_epoch in epoch_progress:
             sample_counter = 0
             batch_yield = 0
             self.current_epoch = n_epoch
@@ -443,50 +451,69 @@ class QuantumTrainer:
             
             # Training phase
             if n_epoch > 0:
-                print("Start Training")
                 start = round(time.time(), 2)
-                
-                for data, labels in tqdm(
-                    train_loader, 
-                    total=int(self.train_max_n / self.batch_size)
-                ):
-                    sample_counter += data.shape[0]
+
+                train_progress = tqdm(
+                    train_loader,
+                    total=len(train_loader),
+                    desc=f"Epoch {n_epoch}/{self.epochs} training",
+                    unit="batch",
+                    leave=False,
+                )
+                for data, labels in train_progress:
+                    batch_samples = data.shape[0]
+                    sample_counter += batch_samples
                     batch_yield += 1
                     loss = self.iteration(data, labels=labels, train=True)
-                    losses += loss
-                    
+                    losses += loss * batch_samples
+                    running_train_loss = losses / sample_counter
+                    train_progress.set_postfix(loss=f"{running_train_loss:.4f}")
+
                     if self.wandb is not None:
-                        self.wandb.log({'train_loss': losses / batch_yield})
-                
+                        self.wandb.log({'train_loss': running_train_loss})
+
                 end = round(time.time(), 2)
-                train_loss = losses / batch_yield
+                train_loss = losses / sample_counter
                 self.print_params('Current weights: \n\n')
-                print('Now validating!')
-            else:
-                print('Running initial validation pass')
-            
+
             # Validation phase
             val_loss = 0.0
-            val_batch_yield = 0
+            val_sample_counter = 0
             val_score = []
             val_labels = []
-            
-            for data, labels in tqdm(
-                val_loader, 
-                total=int(self.valid_max_n / self.batch_size)
-            ):
+
+            val_progress = tqdm(
+                val_loader,
+                total=len(val_loader),
+                desc=f"Epoch {n_epoch}/{self.epochs} validation",
+                unit="batch",
+                leave=False,
+            )
+            for data, labels in val_progress:
+                batch_samples = data.shape[0]
                 loss, score = self.iteration(data, labels=labels, train=False)
-                val_loss += loss
+                val_loss += loss * batch_samples
+                val_sample_counter += batch_samples
                 val_score.append(score)
-                val_labels.append(labels)
-                val_batch_yield += 1
-            
-            val_loss = val_loss / val_batch_yield
-            val_labels = np.array(val_labels).flatten()
-            val_score = np.array(val_score).flatten()
+                val_labels.append(np.reshape(labels, (-1,)))
+                val_progress.set_postfix(
+                    loss=f"{val_loss / val_sample_counter:.4f}"
+                )
+
+            val_loss = val_loss / val_sample_counter
+            val_labels = np.concatenate(val_labels)
+            val_score = np.concatenate(val_score)
             val_auc = roc_auc_score(val_labels, val_score)
             val_std = np.std(val_score)
             val_score_mean = np.mean(val_score)
+
+            epoch_metrics = {
+                'val_loss': f"{val_loss:.4f}",
+                'val_auc': f"{val_auc:.4f}",
+            }
+            if n_epoch > 0:
+                epoch_metrics['train_loss'] = f"{train_loss:.4f}"
+            epoch_progress.set_postfix(epoch_metrics)
             
             if self.wandb is not None:
                 self.wandb.log({'val_loss': val_loss, 'val_auc': val_auc})

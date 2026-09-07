@@ -64,18 +64,20 @@ python train.py \
   base_dir="$PWD" \
   data_dir=/path/to/JetClass \
   save_dir=/path/to/saved_models \
-  batch_size=1
+  batch_size=100
 ```
 
-`batch_size=1` is currently required because validation with larger batches is broken. See
-`problems.MD` in a development checkout for the active backlog.
+Training and validation broadcast each minibatch through the circuit and reduce its loss to the
+mean over that minibatch. A smaller final batch is included in the epoch metrics with its actual
+sample count.
 
 Useful overrides include:
 
 - `signal` and `background`: JetClass sample directory names.
 - `n_signal`, `n_background`: training events per class.
 - `n_signal_val`, `n_background_val`: validation events per class.
-- `wires`: number of qubits and particles used by the one-layer circuit.
+- `wires`: number of qubits. By default, the loader keeps `wires * num_layers` particles per jet.
+- `num_particles`: optional larger particle count; it must be at least `wires * num_layers`.
 - `shots=-1`: analytic expectation values instead of finite-shot evaluation.
 - `device_name`: PennyLane device, such as `default.qubit`, `lightning.kokkos`, or
   `lightning.gpu` when the corresponding plugin is installed.

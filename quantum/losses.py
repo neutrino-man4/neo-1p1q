@@ -40,7 +40,10 @@ def batch_semi_classical_cost(weights,inputs=None,quantum_circuit=None,return_fi
 
 def VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=False,loss_type='MSE',reg=1.):
     bias=weights.aux['bias']
-    exp_vals=np.array(quantum_circuit(weights,inputs),requires_grad=True) # n_qubits x batch_size
+    exp_vals=np.reshape(
+        np.array(quantum_circuit(weights,inputs),requires_grad=True),
+        (-1,),
+    )
     score=exp_vals+bias
     if loss_type not in LOSS_FNS:
         raise ValueError(f"Unknown loss_type '{loss_type}'. Registered: {list(LOSS_FNS)}")
@@ -82,4 +85,3 @@ def probabilistic_loss(weights,inputs=None,quantum_circuit=None,labels=None,retu
     if return_scores:
         return loss_fn, scores
     return np.array(loss_fn,requires_grad=True)
-    
