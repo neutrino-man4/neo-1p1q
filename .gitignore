@@ -2,9 +2,7 @@
 *.DS_Store
 ._*
 
-# local-only design/tracking docs -- not published to the repo
-REFACTOR.md
-refactored.MD
+# local-only files
 problems.MD
 
 # secrets / local-only

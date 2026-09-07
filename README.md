@@ -1,5 +1,6 @@
-# 1P1Q: Particle Physics Data Encoding for Jet Physics
-<img src="https://etpwww.etp.kit.edu/~abal/icons/1p1q_logo.png" alt="alt text" width="15%">
+# 1P1Q: particle physics data encoding for jet physics
+
+<img src="https://etpwww.etp.kit.edu/~abal/icons/1p1q_logo.png" alt="1P1Q logo" width="15%">
 
 **Authors:** Aritra Bal¹, Benedikt Maier², Melik Oughton², Eric Pezone²  
 ¹ Karlsruhe Institute of Technology (KIT), Germany  
@@ -7,182 +8,117 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2502.17301-b31b1b.svg)](https://arxiv.org/abs/2502.17301)
 
+This repository trains and evaluates a variational quantum classifier on JetClass data. The
+supported pipeline is binary classification with the `normal` VQC circuit. It uses OmegaConf for
+configuration and Weights & Biases for run tracking.
 
+## Environment
 
-## Quick Start
+The reference environment uses Python 3.10 and PennyLane 0.37.0. The test suite also runs with
+Python 3.14, PennyLane 0.45.1, and NumPy 2.
 
-### Environment Setup
+Create the reference Conda environment:
 
-We provide a convenient setup script to create the conda environment and install all dependencies:
+```bash
+bash setup.sh
+conda activate quantum-cpu
+pip install omegaconf wandb
+export PYTHONPATH="$PYTHONPATH:$PWD"
+```
 
-1. **Clone the repository and navigate to it**
-2. **Run the setup script:**
-   ```bash
-   chmod +x setup_env.sh
-   ./setup_env.sh
-   ```
-3. **Activate the environment:**
-   ```bash
-   conda activate quantum-cpu
-   ```
-4. **Set up environment variables:**
-   ```bash
-   export PYTHONPATH=$PYTHONPATH:$(pwd)
-   ```
+`omegaconf` and `wandb` are direct runtime dependencies but are not yet listed in
+`requirements.txt`.
 
-The setup script creates a conda environment named `quantum-cpu` with Python 3.10 and installs all required packages from `requirements.txt`.
+Set `WANDB_API_KEY` before training, or use `WANDB_MODE=offline` for a local run.
 
-### Data Access
+## Data layout
 
-Download the training data from [Google Drive](https://drive.google.com/drive/folders/1fGATNxxcCKPk6mZ54Ucv1mYZteOnh33-?usp=sharing).
+The loader expects separate signal and background directories for each split:
 
+```text
+<data_dir>/
+├── train/
+│   ├── TTBar_/*.h5
+│   └── ZJetsToNuNu/*.h5
+├── val/
+│   ├── TTBar_/*.h5
+│   └── ZJetsToNuNu/*.h5
+└── test/
+    ├── TTBar_/*.h5
+    └── ZJetsToNuNu/*.h5
+```
 
+With `flat=true`, the split names are `flat_train`, `flat_val`, and `flat_test`. Each HDF5 file
+must contain `jetConstituentsList` and `jetFeatures`. Constituents must be sorted by decreasing
+particle transverse momentum.
 
 ## Training
 
-### Multi-Core CPU Training
-
-This repository uses [Hydra](https://hydra.cc/) for configuration management and [Weights & Biases](https://wandb.ai/) for experiment tracking.
-
-**Basic training command:**
-```bash
-python3 train.py --config-path $HYDRA_CONF --config-name config
-```
-
-**Multi-core training setup:**
-```bash
-export OMP_PROC_BIND=spread
-export OMP_NUM_THREADS=<N_THREADS>
-python3 train.py --config-path $HYDRA_CONF --config-name config
-```
-
-Set the `lightning.kokkos` device in your YAML configuration for multi-core execution. Example configuration files are available in the `hydra_configs/` directory.
-
-Create a WandB account if you don't already have one, and set your API key using:
+`configs/VQC/base.yaml` is the maintained configuration. Override values with OmegaConf dotlist
+arguments:
 
 ```bash
-export WANDB_API_KEY=YOUR_KEY_HERE
+python train.py \
+  --config configs/VQC/base.yaml \
+  seed=run_001 \
+  base_dir="$PWD" \
+  data_dir=/path/to/JetClass \
+  save_dir=/path/to/saved_models \
+  batch_size=1
 ```
 
+`batch_size=1` is currently required because validation with larger batches is broken. See
+`problems.MD` in a development checkout for the active backlog.
 
-### GPU Training (Recommended)
+Useful overrides include:
 
-For accelerated training, GPU support is available with the following requirements:
-- GPU with Compute Capability ≥ 7.0
-- CUDA Version ≥ 12.0
+- `signal` and `background`: JetClass sample directory names.
+- `n_signal`, `n_background`: training events per class.
+- `n_signal_val`, `n_background_val`: validation events per class.
+- `wires`: number of qubits and particles used by the one-layer circuit.
+- `shots=-1`: analytic expectation values instead of finite-shot evaluation.
+- `device_name`: PennyLane device, such as `default.qubit`, `lightning.kokkos`, or
+  `lightning.gpu` when the corresponding plugin is installed.
 
-**Docker Setup:**
-```bash
-docker pull neutrinoman4/qml-lightning.gpu:v5.0
-```
-> **Note:** Ensure you use version v5.0
+Every run writes its merged configuration to `<save_dir>/<seed>/config.yaml`, along with logs,
+checkpoints, and frozen source files.
 
-**Alternative: Singularity/Apptainer:**
-```bash
-apptainer build qml-lightning-gpu.sif docker://neutrinoman4/qml-lightning.gpu:v5.0
-apptainer shell qml-lightning-gpu.sif
-```
+## Evaluation
 
-**GPU training command:**
-```bash
-python3 train.py --config-path $HYDRA_CONF --config-name config device=lightning.gpu
-```
-
-### HPC Cluster Support
-
-- **Horeka@KIT (Slurm):** See [documentation](https://www.nhr.kit.edu/userdocs/ftp/containers/)
-- **HTCondor:** Example scripts available in `condor_example/`
-
-
-
-## Testing and Inference
-
-### CPU Testing (Recommended)
-
-For optimal performance during testing, use single-threaded CPU execution:
+Evaluate a saved run with its recorded configuration:
 
 ```bash
-OMP_NUM_THREADS=1 OMP_PROC_BIND=spread python3 test_jetclass.py --config-name VQC_JC_SAMPLE_10Q read_n=1000
+OMP_NUM_THREADS=1 OMP_PROC_BIND=spread \
+python evaluate.py --config /path/to/saved_models/run_001/config.yaml
 ```
 
-Inference can run on both CPU and GPU, though GPU provides minimal performance benefits.
+Evaluation loads `trained_model.pickle`, or the latest epoch checkpoint if the final model is
+absent. It writes scores and labels to `<dump>/<seed>/test_results.pickle` and the ROC curve to
+`<save_dir>/<seed>/plots/roc_curve.png`.
 
+## Tests
 
-### Output Configuration
+Run the suite with either supported environment:
 
-- **`read_n`**: Controls the number of samples used for testing
-- **`plot_dir`**: Directory where all plots are saved
-- **`dump_dir`**: Directory where output HDF5 files are saved
-- **`log_wandb`**: Whether or not to log all images to the same WandB run used for training
-
-Configure these parameters in your Hydra config file. Latest configuration examples are available in `hydra_configs/`.
-
----
-
-## Project Structure
-
-### Core Components
-
-- **`train.py`**: Main training script
-- **`test.py`** / **`test_jetclass.py`**: Inference and testing scripts
-- **`case_reader.py`**: Data loader implementation
-- **`quantum/architectures.py`**: Quantum circuit architectures
-- **`quantum/losses.py`**: Loss function definitions
-- **`hydra_configs/`**: Configuration examples
-
-### Available Architectures
-
-Currently implemented quantum circuit architectures:
-- `circuit()`
-- `QCNN_circuit()`
-
-Feel free to implement and experiment with new architectures.
-
-### Experiment Management
-
-- **Seed Management**: The `seed` parameter identifies training runs, with results saved to `/path/to/base/directory/{seed}/`
-- **Descriptions**: Use the `desc` argument to add detailed descriptions to runs
-- **Architecture Freezing**: Training automatically saves a copy of `architectures.py` as `FROZEN_ARCHITECTURE.py` in the save directory
-
-
-
-## Configuration
-
-Example Hydra configuration structure:
-
-```yaml
-# Device configuration
-device: lightning.kokkos  # or lightning.gpu
-
-# Training parameters
-seed: experiment_001
-desc: "Description of experiment"
-
-# Output directories
-plot_dir: "./plots"
-dump_dir: "./outputs"
-
-# Testing parameters
-read_n: 1000
-log_wandb: true
+```bash
+conda run -n quantum-cpu python -m unittest discover -s tests -q
+conda run -n pennylane-gpu-sep2026 python -m unittest discover -s tests -q
 ```
 
+Some tests currently reproduce known failures and pass when those failures occur. The active
+backlog identifies those cases.
 
-There are many more parameters that can be controlled, take a look at the latest and greatest example configs in `hydra_configs/`
+## Main files
 
-
-
-## Requirements
-
-- Python 3.10
-- PennyLane Lightning GPU v0.38.0 (for GPU support)
-- Additional dependencies listed in `requirements.txt`
-
-
+- `train.py`: training entry point.
+- `evaluate.py`: inference and ROC evaluation.
+- `case_reader.py`: balanced JetClass loader.
+- `helpers/config.py`: OmegaConf loading, overrides, and config snapshots.
+- `quantum/architectures.py`: classifier and training loop.
+- `quantum/circuits/`: circuit protocol, registry, and VQC implementation.
+- `quantum/losses.py`: classifier loss functions.
 
 ## Citation
-
-If you use this code in your research, please cite:
 
 ```bibtex
 @article{bal2025anomaly,
