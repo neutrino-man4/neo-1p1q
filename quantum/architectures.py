@@ -1,20 +1,29 @@
+"""
+Configure quantum classifiers and manage training, inference, and checkpoints.
+
+Author: Aritra Bal (ETP)
+Date: 2026-09-08
+"""
+
 # pylint: disable=maybe-no-member
-from typing import Optional, Callable, Union, List, Dict, Tuple, Any
-import pennylane as qml
-from helpers.utils import getIndex
-from quantum.circuits.base import Circuit, CircuitWeights
-from quantum.circuits import registry
 from itertools import combinations
-import time
-from tqdm import tqdm
-import pennylane.numpy as np
+import json
 import os
 import pathlib
-import helpers.utils as ut
 import subprocess
-from torch.utils.data import DataLoader
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import pennylane as qml
+import pennylane.numpy as np
 from sklearn.metrics import roc_auc_score
-import json
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+import helpers.utils as ut
+from helpers.utils import getIndex
+from quantum.circuits import registry
+from quantum.circuits.base import Circuit, CircuitWeights
 
 
 class QuantumClassifier:
@@ -38,7 +47,7 @@ class QuantumClassifier:
         self, 
         wires: int = 4,
         layers: int = 1,
-        shots: int = 5000,
+        shots: Optional[int] = 5000,
         dev_name: str = 'default.qubit',
         use_ancilla: bool = False,
         backend_name: str = 'autograd',
@@ -89,12 +98,12 @@ class QuantumClassifier:
         self.auto_wires = list(range(self.n_qubits))
         self.two_comb_wires = list(combinations(range(self.n_qubits), 2))
     
-    def _set_device(self, shots: int, device_name: str) -> "qml.devices.Device":
+    def _set_device(self, shots: Optional[int], device_name: str) -> "qml.devices.Device":
         """
         Set up the quantum device for simulation/execution.
         
         Args:
-            shots: Number of shots for each measurement
+            shots: Number of shots for each measurement, or None for analytic execution
             device_name: Name of the quantum device
             
         Returns:
@@ -166,13 +175,15 @@ class QuantumClassifier:
         """
         return self.backend
     
-    def load_weights(self, model_path: str, train: bool = False,rearrange=False) -> None:
+    def load_weights(self, model_path: str, train: bool = False, rearrange: bool = False) -> None:
         """
         Load pre-trained weights for the classifier.
         
         Args:
             model_path: Path to the file containing the pre-trained model
             train: If True, enables gradients for the weights
+            rearrange: Reorder legacy flat rotation weights from axis blocks
+                into interleaved Z/Y/X order; ignored for CircuitWeights
         """
         dictionary = ut.Unpickle(model_path)
         saved_weights = dictionary['weights']
@@ -186,14 +197,16 @@ class QuantumClassifier:
             return
         self.current_weights = np.array(saved_weights, requires_grad=train)
         if rearrange:
-            x_weights= self.current_weights[:self.n_qubits*self.num_layers]
-            y_weights = self.current_weights[self.n_qubits*self.num_layers:2*self.n_qubits*self.num_layers]
-            z_weights = self.current_weights[2*self.n_qubits*self.num_layers:3*self.n_qubits*self.num_layers]
+            block_size = self.n_qubits * self.num_layers
+            x_weights = self.current_weights[:block_size]
+            y_weights = self.current_weights[block_size:2 * block_size]
+            z_weights = self.current_weights[2 * block_size:3 * block_size]
             self.current_weights = np.zeros_like(self.current_weights)
 
-            self.current_weights[2:3*self.n_qubits*self.num_layers:3] = x_weights
-            self.current_weights[:3*self.n_qubits*self.num_layers:3] = z_weights
-            self.current_weights[1:3*self.n_qubits*self.num_layers:3] = y_weights
+            self.current_weights[2:3 * block_size:3] = x_weights
+            self.current_weights[:3 * block_size:3] = z_weights
+            self.current_weights[1:3 * block_size:3] = y_weights
+
     def print_weights(self) -> None:
         """Print the current weights of the quantum classifier."""
         print('Current weights: \n\n', self.current_weights)
@@ -203,7 +216,7 @@ class QuantumClassifier:
         dataloader: DataLoader, 
         loss_fn: Callable,
         loss_type: str = 'BCE'
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Run inference on the classifier circuit using loaded weights and a dataloader.
         
@@ -214,7 +227,7 @@ class QuantumClassifier:
             loss_type: Type of loss function to use
             
         Returns:
-            Tuple of (costs, scores) both with shape (N_inputs,)
+            Tuple of (costs, scores, labels), each with shape (N_inputs,)
             
         Raises:
             ValueError: If weights are not initialized
@@ -250,6 +263,8 @@ class QuantumClassifier:
         
         print("Inference completed")
         return costs, scores, labels
+
+
 class QuantumTrainer:
     """
     A class for training quantum classification circuits.
@@ -365,16 +380,15 @@ class QuantumTrainer:
             new_rot, *new_aux_values = updated_args
             self.current_weights = CircuitWeights(rot=new_rot, aux=dict(zip(aux_keys, new_aux_values)))
             return float(cost)
-        else:
-            cost, scores = self.quantum_loss(
-                self.current_weights,
-                inputs=data,
-                labels=labels,
-                quantum_circuit=self.circuit,
-                return_scores=True,
-                loss_type=self.loss_type
-            )
-            return float(cost), np.reshape(np.array(scores, requires_grad=False), (-1,))
+        cost, scores = self.quantum_loss(
+            self.current_weights,
+            inputs=data,
+            labels=labels,
+            quantum_circuit=self.circuit,
+            return_scores=True,
+            loss_type=self.loss_type
+        )
+        return float(cost), np.reshape(np.array(scores, requires_grad=False), (-1,))
     
     def is_evictable_job(self, seed: Optional[Any] = None) -> None:
         """
@@ -399,7 +413,8 @@ class QuantumTrainer:
             val_loader: DataLoader for the validation dataset
             
         Returns:
-            Training and validation history (losses and accuracies)
+            Training losses, validation losses, and validation ROC AUC values.
+            Validation includes epoch zero, before any training updates.
         """
         self.print_params('Initial weights: ')
         n_decays = 0
@@ -595,12 +610,8 @@ class QuantumTrainer:
         opt_name = None
         
         if name is None:
-            if self.current_epoch > 100:
-                name = f'ep{self.current_epoch:03}.pickle'
-                opt_name = f'optimizer_ep{self.current_epoch:03}.json'
-            else:
-                name = f'ep{self.current_epoch:02}.pickle'
-                opt_name = f'optimizer_ep{self.current_epoch:02}.json'
+            name = f'ep{self.current_epoch:02}.pickle'
+            opt_name = f'optimizer_ep{self.current_epoch:02}.json'
         
         if 'trained' not in name:
             save_dir = self.checkpoint_dir
@@ -638,10 +649,10 @@ class QuantumTrainer:
     
     def set_current_epoch(self, epoch: int) -> None:
         """
-        Set the current epoch number if training is resumed from a checkpoint.
+        Set the current epoch to one after the supplied checkpoint epoch.
         
         Args:
-            epoch: The epoch number to set
+            epoch: Last completed checkpoint epoch
         """
         self.current_epoch = epoch + 1
         print("Resume training from epoch:", epoch + 1)
@@ -659,7 +670,7 @@ class QuantumTrainer:
     
     def fetch_history(self) -> Dict[str, List[float]]:
         """
-        Get the history of training and validation losses and accuracies.
+        Get the history of training losses, validation losses, and ROC AUC.
         
         Returns:
             Dictionary containing the history of training and validation metrics
