@@ -1,3 +1,10 @@
+"""
+Loss functions for fidelity objectives and quantum classifiers.
+
+Author: Aritra Bal (ETP)
+Date: 2026-09-08
+"""
+
 import pennylane.numpy as np
 import tqdm
 from typing import Callable, Dict
@@ -5,6 +12,7 @@ import quantum.math_functions as mfunc
 from autograd.scipy.special import expit
 
 def sigmoid(x):
+    """Convert logits to probabilities with an elementwise stable sigmoid."""
     return expit(x)
 
 # name -> scoring function(labels, score); add an entry here to support a new loss_type
@@ -14,6 +22,11 @@ LOSS_FNS: Dict[str, Callable] = {
 }
 
 def semi_classical_cost(weights,inputs=None,quantum_circuit=None,return_fid=False):
+    """Return 100 times one minus the circuit fidelity, without averaging.
+
+    Call quantum_circuit(weights, inputs) for the fidelity. If return_fid is
+    True, return (cost, 100 * fidelity).
+    """
     if return_fid:
         fid=quantum_circuit(weights,inputs)
         #fid=np.sqrt(fid)
@@ -27,6 +40,11 @@ def semi_classical_cost(weights,inputs=None,quantum_circuit=None,return_fid=Fals
     return 100.*np.array(cost,requires_grad=False)
 
 def batch_semi_classical_cost(weights,inputs=None,quantum_circuit=None,return_fid=False):
+    """Return the mean infidelity scaled by 100 over the circuit outputs.
+
+    If return_fid is True, return (mean cost, mean fidelity), both scaled
+    by 100.
+    """
     if return_fid:
         fid=quantum_circuit(weights,inputs)
         #fid=np.sqrt(fid)
@@ -40,6 +58,13 @@ def batch_semi_classical_cost(weights,inputs=None,quantum_circuit=None,return_fi
     return batched_average_cost
 
 def VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=False,loss_type='MSE',reg=1.):
+    """Compute mean classifier loss from circuit expectations plus weights.aux['bias'].
+
+    Flatten the circuit outputs and apply the loss registered under loss_type.
+    BCE consumes logits; MSE consumes raw scores. If return_scores is True,
+    return (loss, scores), with sigmoid probabilities for BCE and raw scores
+    otherwise. Unknown loss names raise ValueError. reg is unused.
+    """
     bias=weights.aux['bias']
     exp_vals=np.reshape(
         np.array(quantum_circuit(weights,inputs),requires_grad=True),
@@ -54,6 +79,13 @@ def VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=
     return np.array(loss_fn,requires_grad=True)
 
 def batched_VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=False,loss_type='MSE',reg=1.):
+    """Evaluate inputs individually and return the mean registered classifier loss.
+
+    Add weights.aux['bias'] to each circuit output before computing the loss.
+    If return_scores is True, return arrays of individual losses and scores
+    instead of averaging. BCE scores are sigmoid probabilities; other scores
+    are raw outputs plus bias. Unknown loss names raise ValueError. reg is unused.
+    """
     bias=weights.aux['bias']
     #k1=weights[-3]
     #k2=weights[-3]
@@ -74,6 +106,13 @@ def batched_VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return
     return np.mean(loss_fn)
 
 def probabilistic_loss(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=False,loss_type='BCE'):
+    """Return the mean of one minus each labeled class probability.
+
+    Expect a class-probability vector for one sample or a (batch, classes)
+    array for multiple samples, with integer class labels. Scalar VQC
+    expectation outputs are incompatible. If return_scores is True, return
+    (mean loss, individual probability deficits). loss_type is unused.
+    """
     batch_size=len(labels)
     probs=np.array(quantum_circuit(weights,inputs),requires_grad=True) # n_qubits x batch_size
     
