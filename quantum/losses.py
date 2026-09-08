@@ -2,14 +2,15 @@ import pennylane.numpy as np
 import tqdm
 from typing import Callable, Dict
 import quantum.math_functions as mfunc
+from autograd.scipy.special import expit
 
 def sigmoid(x):
-    return 1/(1+np.exp(-x))
+    return expit(x)
 
 # name -> scoring function(labels, score); add an entry here to support a new loss_type
 LOSS_FNS: Dict[str, Callable] = {
     'MSE': mfunc.mean_squared_error,
-    'BCE': mfunc.binary_cross_entropy,
+    'BCE': mfunc.binary_cross_entropy_with_logits,
 }
 
 def semi_classical_cost(weights,inputs=None,quantum_circuit=None,return_fid=False):
@@ -49,7 +50,7 @@ def VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=
         raise ValueError(f"Unknown loss_type '{loss_type}'. Registered: {list(LOSS_FNS)}")
     loss_fn=LOSS_FNS[loss_type](labels,score)
     if return_scores:
-        return loss_fn, score
+        return loss_fn, sigmoid(score) if loss_type == 'BCE' else score
     return np.array(loss_fn,requires_grad=True)
 
 def batched_VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=False,loss_type='MSE',reg=1.):
@@ -64,7 +65,7 @@ def batched_VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return
         exp_vals=np.array(quantum_circuit(weights,input[None,...]),requires_grad=True) # n_qubits x batch_size
         #exp_vals=np.mean(exp_vals,axis=0)
         score=exp_vals+bias
-        scores.append(score)
+        scores.append(sigmoid(score) if loss_type == 'BCE' else score)
         loss_fn.append(LOSS_FNS[loss_type](label,score))
     loss_fn=np.array(loss_fn,requires_grad=False)
     score=np.array(scores,requires_grad=False)
