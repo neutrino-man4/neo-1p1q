@@ -3,6 +3,7 @@
 ._*
 
 # local-only files
+/AGENTS.md
 problems.MD
 AUDIT.md
 auto_qml.py
