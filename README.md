@@ -43,7 +43,7 @@ Pass configuration changes as `key=value` arguments:
 
 ```bash
 python train.py \
-  --config configs/VQC/base.yaml \
+  --config configs/base.yaml \
   seed=run_001 \
   data_dir=/path/to/JetClass \
   save_dir=/path/to/saved_models

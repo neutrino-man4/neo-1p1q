@@ -45,7 +45,7 @@ def main(cfg: DictConfig):
     else:
         if os.path.exists(os.path.join(save_dir, 'config.yaml')):
             raise FileExistsError(f'Run already exists at {save_dir}; choose a new seed or resume it.')
-        for key in ('save_dir', 'data_dir', 'dump', 'base_dir'):
+        for key in ('save_dir', 'data_dir', 'dump'):
             cfg[key] = os.path.abspath(os.path.expanduser(cfg[key]))
         cfg.seed = str(cfg.seed)
         cfg.save_dir = os.path.dirname(save_dir)
@@ -215,7 +215,7 @@ def main(cfg: DictConfig):
         logger.info(f'Epochs: {cfg.epochs} | Learning rate: {cfg.lr} | Batch size: {cfg.batch_size} \nBackend: {cfg.backend} | Wires: {cfg.wires} | Shots: {cfg.shots} \n')    
         logger.info(f'Additional information: {cfg.desc}')
 
-    if cfg.evictable:
+    if cfg.get('evictable', False):
         trainer.is_evictable_job(seed=cfg.seed)
 
     # Begin training

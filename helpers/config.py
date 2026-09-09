@@ -16,7 +16,7 @@ from omegaconf import DictConfig, OmegaConf
 
 # Anchored to the repo root (parent of helpers/) so it resolves regardless of cwd.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "configs", "VQC", "base.yaml")
+DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "configs", "base.yaml")
 
 
 def load_config(default_config: str = DEFAULT_CONFIG) -> DictConfig:
@@ -79,7 +79,7 @@ def evaluation_config_path(argv: list[str] | None = None) -> str:
     source.add_argument('--seed', help='Run name under the model directory')
     parser.add_argument(
         '--model-dir', default=None,
-        help='Model directory (default: save_dir from configs/VQC/base.yaml)',
+        help='Model directory (default: save_dir from configs/base.yaml)',
     )
     args = parser.parse_args(argv)
     if args.config:

@@ -3,12 +3,6 @@
 This is the active development backlog for the supported JetClass VQC pipeline. Completed work
 belongs in Git history rather than this file. Status checked against the code on 2026-09-09.
 
-## P14: unused configurations remain
-
-The AOJ, QAE, VPC, top-level, and JetClass base configurations lack fields required by the current
-entry points. Delete them if those workflows are retired. Otherwise, give each configuration a
-supported entry point and a smoke test.
-
 ## P15: pickle writes leak file handles
 
 `helpers.utils.Pickle()` opens pickle files without closing them. The test suite reports

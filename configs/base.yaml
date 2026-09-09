@@ -1,36 +1,42 @@
 seed: 'base'
-base_dir: '/work/abal/qae_hep/'
-train: true
+
+# JetClass data and outputs
+signal: 'TTBar_'
+background: 'ZJetsToNuNu'
+n_signal: 1000
+n_background: 1000
+n_signal_val: 200
+n_background_val: 200
+n_signal_test: 2000
+n_background_test: 2000
+flat: false
+norm_pt: false
+data_dir: './data/JetClass'
+save_dir: './saved_models'
+dump: './results'
+
+# Circuit
 wires: 4
-ancilla: False
-trash_qubits: 3
+num_layers: 1
 shots: 2500
-train_n: 2000
-valid_n: 400
-batch_size: 100
-epochs: 25
-improv: 0.01
 backend: 'autograd'
 device_name: 'lightning.kokkos'
+circuit_type: 'normal'
+operations_per_qubit: 3
+aux_weights:
+  scale_factor: 1.0
+  bias: 0.1
+
+# Optimization
+batch_size: 100
+epochs: 25
 lr: 0.05
 lr_decay: false
+improv: 0.01
+patience: 2
+loss: 'MSE'
+
+# Run control
 save: true
-flat: false
-evictable: false
-separate_ancilla: false
 resume: false
 desc: 'Training run'
-norm_pt: false
-substructure: false
-patience: 2
-use_reuploading: false
-loss: 'semiclassical'
-save_dir: '/work/abal/qae_hep/saved_models/'
-data_dir: '/ceph/abal/JetClass/'
-dump: '/ceph/abal/QML/JetClass/dumps/' # only for testing
-read_n: 2000 # only for testing
-load: false # only for testing
-scheme: 'min' # only for testing
-log_wandb: false # only for testing
-load_best: false # only for testing
-circuit_type: 'normal'
