@@ -3,14 +3,6 @@
 This is the active development backlog for the supported JetClass VQC pipeline. Completed work
 belongs in Git history rather than this file. Status checked against the code on 2026-09-09.
 
-## P13: installation metadata is incomplete
-
-`train.py` imports OmegaConf and WandB, but neither package is listed in `requirements.txt`.
-`setup.sh` therefore does not create a complete runtime environment from the repository alone.
-
-Add every direct runtime dependency to the environment definition and verify a clean installation
-can import both entry points.
-
 ## P14: unused configurations remain
 
 The AOJ, QAE, VPC, top-level, and JetClass base configurations lack fields required by the current
