@@ -1,10 +1,11 @@
 # OS / editor junk
 *.DS_Store
 ._*
-
+.codex
 # local-only files
-/AGENTS.md
+AGENTS.md
 problems.MD
+future.MD
 AUDIT.md
 auto_qml.py
 data_reader.py
