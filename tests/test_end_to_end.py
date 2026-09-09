@@ -223,15 +223,14 @@ class TestKnownPreExistingBugs(unittest.TestCase):
     REFACTOR.md/AUDIT.md as pre-existing and out of this refactor's scope.
     """
 
-    def test_resume_path_passes_raw_dict_not_circuitweights(self) -> None:
-        """train.py's resume branch does ut.Unpickle(model_path) without ['weights'],
-        so init_weights ends up as the raw checkpoint dict, not a CircuitWeights."""
+    def test_trainer_rejects_raw_checkpoint_dictionary(self) -> None:
+        """Trainer callers must extract the weights from a checkpoint dictionary."""
         with tempfile.TemporaryDirectory() as save_dir:
             vqc, trainer = _build_trainer(save_dir, batch_size=1, epochs=1)
             trainer.run_training_loop(_make_batches(2, 1, 4, 1), _make_batches(2, 1, 4, 1))
             trained_path = os.path.join(save_dir, 'trained_model.pickle')
 
-            resumed_init_weights = ut.Unpickle(trained_path)  # mirrors train.py:56 exactly
+            resumed_init_weights = ut.Unpickle(trained_path)
             self.assertIsInstance(resumed_init_weights, dict)  # not a CircuitWeights
 
             optimizer = qml.AdamOptimizer(stepsize=0.05)

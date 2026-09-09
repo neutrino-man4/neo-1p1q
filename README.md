@@ -82,8 +82,12 @@ Useful overrides include:
 - `device_name`: PennyLane device, such as `default.qubit`, `lightning.kokkos`, or
   `lightning.gpu` when the corresponding plugin is installed.
 
-Every run writes its merged configuration to `<save_dir>/<seed>/config.yaml`, along with logs,
-checkpoints, and frozen source files.
+Every run writes its resolved configuration, including overrides and newly added options, to
+`<save_dir>/<seed>/config.yaml`. Use a new seed for each run. A successful run with `save=true`
+records the configuration, source fingerprints, numerical-library versions, and completed epoch
+count alongside the final weights. Resume reads the saved settings before saving its effective
+configuration; other training-option overrides are ignored, and optimizer restoration remains
+unimplemented.
 
 ## Evaluation
 
@@ -94,9 +98,22 @@ OMP_NUM_THREADS=1 OMP_PROC_BIND=spread \
 python evaluate.py --config /path/to/saved_models/run_001/config.yaml
 ```
 
-Evaluation loads `trained_model.pickle`, or the latest epoch checkpoint if the final model is
-absent. It writes scores and labels to `<dump>/<seed>/test_results.pickle` and the ROC curve to
-`<save_dir>/<seed>/plots/roc_curve.png`.
+Alternatively, locate the saved YAML by run name:
+
+```bash
+python evaluate.py --seed run_001 --model-dir /path/to/saved_models
+```
+
+`--model-dir` defaults to `save_dir` in `configs/VQC/base.yaml`. Evaluation accepts no training
+or circuit overrides. It loads `trained_model.pickle` beside the YAML, so a run directory can
+be moved without redirecting weight loading to its original location. Results go to
+`<dump>/<seed>/test_results.pickle` and the ROC curve goes to the run's `plots/roc_curve.png`.
+
+Missing final weights, missing provenance in older checkpoints, changed configuration or source
+code/library versions, and incompatible or nonfinite weights cause evaluation to stop. Epoch
+checkpoints are not used as substitutes. Completion and early stopping do not prove convergence;
+evaluation warns that the validation history must be inspected. Finite-shot scores remain
+stochastic even when the circuit and parameters match.
 
 ## Tests
 

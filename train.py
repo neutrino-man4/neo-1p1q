@@ -1,3 +1,10 @@
+"""
+Train a quantum classifier and save its resolved configuration and final weights.
+
+Author: Aritra Bal (ETP)
+Date: 2026-09-09
+"""
+
 from omegaconf import DictConfig, OmegaConf
 import os
 import pathlib
@@ -11,16 +18,36 @@ import pennylane as qml
 import helpers.utils as ut
 import case_reader as cr
 import quantum.losses as loss
+import quantum.architectures as qc
 from quantum.circuits.base import CircuitWeights
 from helpers.config import load_config, save_config
+from helpers.trained_run import implementation_signature, save_trained_run, validate_weights
 from loguru import logger
 import wandb
 
 
 def main(cfg: DictConfig):
+    """Train with resolved run settings and certify successfully completed weights."""
+    cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
+    cfg.seed = str(cfg.seed)
+    save_dir = os.path.abspath(os.path.join(os.path.expanduser(cfg.save_dir), cfg.seed))
+    resume = cfg.resume
+    if resume:
+        cfg = OmegaConf.load(os.path.join(save_dir, 'config.yaml'))
+        OmegaConf.resolve(cfg)
+        logger.warning('Resume uses the saved configuration; other training-option overrides are ignored.')
+        logger.warning('Resume still starts a fresh optimizer; optimizer-state restoration is not implemented.')
+    else:
+        if os.path.exists(os.path.join(save_dir, 'config.yaml')):
+            raise FileExistsError(f'Run already exists at {save_dir}; choose a new seed or resume it.')
+        for key in ('save_dir', 'data_dir', 'dump', 'base_dir'):
+            cfg[key] = os.path.abspath(os.path.expanduser(cfg[key]))
+    cfg.resume = resume
+    cfg.seed = str(cfg.seed)
+    cfg.save_dir = os.path.dirname(save_dir)
+    signature = implementation_signature()
     # Set up directories
     base_dir: str = cfg.base_dir
-    save_dir = os.path.join(cfg.save_dir, cfg.seed)
     plot_dir = os.path.join(save_dir, 'plots')
     pathlib.Path(plot_dir).mkdir(parents=True, exist_ok=True)
 
@@ -45,12 +72,9 @@ def main(cfg: DictConfig):
     save_config(cfg, os.path.join(save_dir, 'config.yaml'))
 
     # Further setup based on config
-    if cfg.resume:
-        test_args = OmegaConf.load(os.path.join(save_dir, 'config.yaml'))
-        import importlib
-        qc = importlib.import_module('saved_models.' + cfg.seed + '.FROZEN_ARCHITECTURE')
+    if resume:
         model_path = sorted(glob.glob(os.path.join(save_dir, 'checkpoints', 'ep*.pickle')))[-1]
-        init_weights = ut.Unpickle(model_path)
+        init_weights = ut.Unpickle(model_path)['weights']
 
         logger.add(os.path.join(cfg.save_dir, 'logs.log'), rotation='10 MB', backtrace=True, diagnose=True, level='DEBUG', mode="a")
         logger.info("########################################### \n\n")
@@ -59,10 +83,7 @@ def main(cfg: DictConfig):
         logger.info(f"Training resumed at {datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}")
         logger.info("Current weights are: ", init_weights)
         logger.info("\n\n ########################################### \n\n")
-        cfg = test_args
-        cfg.seed = str(cfg.seed)
     else:
-        import quantum.architectures as qc
         logger.info("########################################### \n\n")
         logger.info(f"This circuit contains {cfg.wires} qubits")
         logger.info("\n\n ########################################### \n\n")
@@ -93,22 +114,15 @@ def main(cfg: DictConfig):
     if cfg.shots < 0:
         logger.warning("Negative shots specified. Setting to None for an analytic calculation.")
     # Create the quantum classifier instance
-    VQC = qc.QuantumClassifier(
-        wires=cfg.wires, 
-        shots=cfg.shots if cfg.shots > 0 else None,
-        dev_name=cfg.device_name,
-        layers=cfg.num_layers,
-        backend_name=cfg.backend,
-        test=False  # Don't set circuit immediately
-    )
-    VQC.set_circuit(circuit_type=cfg.circuit_type, operations_per_qubit=cfg.operations_per_qubit)
+    VQC = qc.QuantumClassifier.from_config(cfg)
 
-    if not cfg.resume:
+    if not resume:
         shape = VQC._impl.rotation_shape(len(VQC.auto_wires), cfg.num_layers)
         rot = np.array(np.random.uniform(0, np.pi, size=(shape.L, shape.N, shape.R)), requires_grad=True)
         aux = {**VQC._impl.aux_defaults, **dict(cfg.get('aux_weights', {}))}
         aux = {k: np.array(v, requires_grad=True) for k, v in aux.items()}
         init_weights = CircuitWeights(rot=rot, aux=aux)
+    validate_weights(VQC, init_weights, cfg)
 
     train_max_n = cfg.n_signal + cfg.n_background
     valid_max_n = cfg.n_signal_val + cfg.n_background_val
@@ -186,7 +200,7 @@ def main(cfg: DictConfig):
     trainer.print_params('Initialized parameters!')
     trainer.set_directories(save_dir)
 
-    if cfg.resume:
+    if resume:
         trainer.set_current_epoch(ut.get_current_epoch(model_path))
         logger.info(f"Resuming training from epoch {trainer.current_epoch}")
     else:
@@ -201,6 +215,8 @@ def main(cfg: DictConfig):
     abs_start = time.time()
     try:
         history = trainer.run_training_loop(train_loader, val_loader)
+        if cfg.save:
+            save_trained_run(save_dir, cfg, VQC, trainer.current_weights, history, signature)
     except KeyboardInterrupt:
         print("WHYYYYY")
         print("DON'T PRESS CTRL+C AGAIN. I'M TRYING TO SAVE THE CURRENT MODEL AND WRITE TO LOG!")

@@ -1,11 +1,8 @@
 """
-Run inference with a trained QuantumClassifier and report ROC/AUC on the held-out
-test set. Replaces the old test.py / test_copy.py / test_jetclass.py, which targeted
-a QuantumAutoencoder API that no longer exists. Point --config at the run's saved
-config.yaml (or a base config with seed=<run> on the CLI) to pick which weights to
-load.
+Evaluate final trained weights using only their saved run configuration.
+Locate config.yaml with --config PATH or --seed RUN [--model-dir DIRECTORY].
 Author: Aritra Bal (ETP)
-Date: 2026-09-04
+Date: 2026-09-09
 """
 import glob
 import os
@@ -15,18 +12,20 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from loguru import logger
-from omegaconf import DictConfig
 from sklearn.metrics import roc_curve, roc_auc_score
 
 import case_reader as cr
 import helpers.utils as ut
-import quantum.architectures as qc
 import quantum.losses as loss
-from helpers.config import load_config
+from helpers.config import evaluation_config_path
+from helpers.trained_run import load_trained_run
 
 
-def main(cfg: DictConfig) -> None:
-    save_dir = os.path.join(cfg.save_dir, cfg.seed)
+def main(config_path: str) -> None:
+    """Verify a saved run, evaluate its final weights, and report test ROC/AUC."""
+    config_path = str(pathlib.Path(config_path).expanduser().resolve())
+    cfg, VQC = load_trained_run(config_path)
+    save_dir = os.path.dirname(config_path)
     dump_dir = os.path.join(cfg.dump, cfg.seed)
     plot_dir = os.path.join(save_dir, 'plots')
     pathlib.Path(dump_dir).mkdir(parents=True, exist_ok=True)
@@ -34,27 +33,7 @@ def main(cfg: DictConfig) -> None:
 
     logger.add(os.path.join(save_dir, 'eval.log'), rotation='10 MB', level='DEBUG')
 
-    # Rebuild the circuit with the same shape it was trained with
-    VQC = qc.QuantumClassifier(
-        wires=cfg.wires,
-        shots=cfg.shots if cfg.shots > 0 else None,
-        dev_name=cfg.device_name,
-        layers=cfg.num_layers,
-        backend_name=cfg.backend,
-        test=False
-    )
-    VQC.set_circuit(circuit_type=cfg.circuit_type)
-
-    # Prefer the final model; fall back to the latest checkpoint
-    model_path = os.path.join(save_dir, 'trained_model.pickle')
-    if not os.path.isfile(model_path):
-        checkpoints = sorted(glob.glob(os.path.join(save_dir, 'checkpoints', 'ep*.pickle')))
-        if not checkpoints:
-            raise FileNotFoundError(f"No trained_model.pickle or checkpoints found under {save_dir}")
-        model_path = checkpoints[-1]
-        logger.warning(f"trained_model.pickle not found, using latest checkpoint: {model_path}")
-    VQC.load_weights(model_path)
-    logger.info(f"Loaded weights from {model_path}")
+    logger.info(f"Loaded verified final weights from {os.path.join(save_dir, 'trained_model.pickle')}")
 
     cost_fn = loss.probabilistic_loss if cfg.loss == 'prob' else loss.VQC_cost
 
@@ -104,4 +83,4 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    main(load_config())
+    main(evaluation_config_path())

@@ -62,4 +62,25 @@ def load_config(default_config: str = DEFAULT_CONFIG) -> DictConfig:
 
 def save_config(cfg: DictConfig, path: str) -> None:
     """Write the exact config used for a run to a single reusable YAML file."""
-    OmegaConf.save(cfg, path)
+    OmegaConf.save(cfg, path, resolve=True)
+
+
+def evaluation_config_path(argv: list[str] | None = None) -> str:
+    """Locate a saved run YAML without accepting training-option overrides."""
+    parser = argparse.ArgumentParser(description="Evaluate a saved training run.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--config', help='Path to the saved run config.yaml')
+    source.add_argument('--seed', help='Run name under the model directory')
+    parser.add_argument(
+        '--model-dir', default=None,
+        help='Model directory (default: save_dir from configs/VQC/base.yaml)',
+    )
+    args = parser.parse_args(argv)
+    if args.config:
+        if args.model_dir is not None:
+            parser.error('--model-dir can only be used with --seed')
+        return os.path.abspath(os.path.expanduser(args.config))
+    if args.seed in ('.', '..') or os.path.basename(args.seed) != args.seed:
+        parser.error('--seed must be a run directory name')
+    model_dir = args.model_dir or OmegaConf.load(DEFAULT_CONFIG).save_dir
+    return os.path.abspath(os.path.join(os.path.expanduser(model_dir), args.seed, 'config.yaml'))

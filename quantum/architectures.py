@@ -97,6 +97,25 @@ class QuantumClassifier:
         self.all_wires = list(range(total_qubits))
         self.auto_wires = list(range(self.n_qubits))
         self.two_comb_wires = list(combinations(range(self.n_qubits), 2))
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "QuantumClassifier":
+        """Build the same classifier from explicit training or saved run settings."""
+        required = ('wires', 'shots', 'device_name', 'num_layers', 'backend',
+                    'circuit_type', 'operations_per_qubit')
+        missing = [key for key in required if key not in cfg or cfg[key] is None]
+        if missing:
+            raise ValueError(f"Missing circuit settings: {', '.join(missing)}")
+        model = cls(
+            wires=cfg.wires,
+            shots=cfg.shots if cfg.shots > 0 else None,
+            dev_name=cfg.device_name,
+            layers=cfg.num_layers,
+            backend_name=cfg.backend,
+            test=False,
+        )
+        model.set_circuit(cfg.circuit_type, operations_per_qubit=cfg.operations_per_qubit)
+        return model
     
     def _set_device(self, shots: Optional[int], device_name: str) -> "qml.devices.Device":
         """
