@@ -14,9 +14,4 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
-COPY train.py evaluate.py case_reader.py ./
-COPY configs ./configs
-COPY helpers ./helpers
-COPY quantum ./quantum
-
-CMD ["python", "train.py", "--help"]
+CMD ["python"]
