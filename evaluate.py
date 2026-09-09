@@ -1,27 +1,34 @@
 """
-Evaluate final trained weights using only their saved run configuration.
-Locate config.yaml with --config PATH or --seed RUN [--random-seed INTEGER].
+Evaluate one saved run or aggregate every random-seed run in an experiment.
+
 Author: Aritra Bal (ETP)
 Date: 2026-09-09
 """
+from collections import deque
 import glob
 import os
 import pathlib
+import signal
+import subprocess
+import sys
+import time
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from loguru import logger
+import numpy as np
+from omegaconf import OmegaConf
 from sklearn.metrics import roc_curve, roc_auc_score
 
 import case_reader as cr
 import helpers.utils as ut
 import quantum.losses as loss
-from helpers.config import evaluation_config_path, run_directory
-from helpers.trained_run import load_trained_run
+from helpers.config import SINGLE_THREAD_ENV, parse_evaluation_args, run_directory
+from helpers.trained_run import CIRCUIT_FILES, load_trained_run
 
 
-def main(config_path: str) -> None:
+def main(config_path: str) -> dict[str, object]:
     """Verify a saved run, evaluate its final weights, and report test ROC/AUC."""
     config_path = str(pathlib.Path(config_path).expanduser().resolve())
     cfg, VQC = load_trained_run(config_path)
@@ -72,7 +79,8 @@ def main(config_path: str) -> None:
     fpr, tpr, _ = roc_curve(labels, scores)
     logger.info(f"Test AUC: {auc:.4f}")
 
-    ut.Pickle({'costs': costs, 'scores': scores, 'labels': labels, 'auc': auc}, 'test_results', path=dump_dir)
+    results = {'costs': costs, 'scores': scores, 'labels': labels, 'auc': auc}
+    ut.Pickle(results, 'test_results', path=dump_dir)
 
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.plot(fpr, tpr, linewidth=2, label=f'AUC = {auc:.3f}')
@@ -81,8 +89,243 @@ def main(config_path: str) -> None:
     ax.set_ylabel('True Positive Rate', size=16)
     ax.legend(prop={'size': 14})
     fig.savefig(os.path.join(plot_dir, 'roc_curve.png'))
+    plt.close(fig)
     logger.info(f"Saved ROC curve to {os.path.join(plot_dir, 'roc_curve.png')}")
+    return results
+
+
+def discover_evaluation_runs(
+    experiment_dir: pathlib.Path,
+) -> tuple[int, list[pathlib.Path], dict[str, str], list[str]]:
+    """Find complete numeric random-seed run directories under an experiment."""
+    seed_directories = []
+    notices = []
+    for path in sorted(experiment_dir.iterdir(), key=lambda item: item.name):
+        if not path.is_dir():
+            continue
+        if not path.name.isdecimal():
+            notices.append(f'Ignoring non-random-seed directory: {path}')
+            continue
+        seed_directories.append(path)
+    seed_directories.sort(key=lambda path: (int(path.name), path.name))
+
+    runnable = []
+    failures = {}
+    required = ['config.yaml', 'trained_model.pickle'] + [
+        str(pathlib.Path('circuits') / name) for name in CIRCUIT_FILES
+    ]
+    for run_dir in seed_directories:
+        missing = [name for name in required if not (run_dir / name).is_file()]
+        if missing:
+            failures[run_dir.name] = 'missing ' + ', '.join(missing)
+        else:
+            runnable.append(run_dir / 'config.yaml')
+    return len(seed_directories), runnable, failures, notices
+
+
+def _start_evaluation(config_path: pathlib.Path) -> subprocess.Popen:
+    """Start one single-threaded evaluation subprocess."""
+    environment = os.environ.copy()
+    environment.update(SINGLE_THREAD_ENV)
+    command = [
+        sys.executable,
+        str(pathlib.Path(__file__).resolve()),
+        '--config',
+        str(config_path),
+    ]
+    print(f'Launching evaluation for random_seed={config_path.parent.name}')
+    return subprocess.Popen(command, env=environment, start_new_session=True)
+
+
+def evaluate_configs(
+    config_paths: list[pathlib.Path],
+    num_cores: int,
+) -> tuple[list[pathlib.Path], dict[str, str], bool]:
+    """Evaluate configs with bounded parallelism while retaining every failure."""
+    pending = deque(config_paths)
+    active: dict[subprocess.Popen, pathlib.Path] = {}
+    successful = []
+    failures = {}
+
+    try:
+        while pending or active:
+            while pending and len(active) < num_cores:
+                config_path = pending.popleft()
+                try:
+                    process = _start_evaluation(config_path)
+                except OSError as error:
+                    failures[config_path.parent.name] = f'could not launch: {error}'
+                    continue
+                active[process] = config_path
+
+            completed = []
+            while active and not completed:
+                for process in active:
+                    return_code = process.poll()
+                    if return_code is not None:
+                        completed.append((process, return_code))
+                if not completed:
+                    time.sleep(0.1)
+
+            for process, return_code in completed:
+                config_path = active.pop(process)
+                random_seed = config_path.parent.name
+                if return_code == 0:
+                    successful.append(config_path)
+                    print(f'Completed evaluation for random_seed={random_seed}')
+                else:
+                    failures[random_seed] = f'evaluation exited with code {return_code}'
+    except KeyboardInterrupt:
+        for process in active:
+            try:
+                process.send_signal(signal.SIGINT)
+            except ProcessLookupError:
+                pass
+        for process in active:
+            process.wait()
+        return successful, failures, True
+
+    return successful, failures, False
+
+
+def _load_result(config_path: pathlib.Path) -> dict[str, object]:
+    """Load and validate the newly written result for one successful evaluation."""
+    cfg = OmegaConf.load(config_path)
+    result_path = run_directory(
+        cfg.dump, cfg.seed, cfg.get('random_seed')
+    ) / 'test_results.pickle'
+    results = ut.Unpickle(result_path)
+    if not isinstance(results, dict) or not {'scores', 'labels', 'auc'} <= results.keys():
+        raise ValueError(f'Invalid evaluation result: {result_path}')
+    scores = np.asarray(results['scores']).reshape(-1)
+    labels = np.asarray(results['labels']).reshape(-1)
+    if not len(labels) or len(scores) != len(labels):
+        raise ValueError(f'Invalid score and label lengths in {result_path}')
+    auc = float(results['auc'])
+    if not np.isfinite(auc):
+        raise ValueError(f'Nonfinite AUC in {result_path}')
+    return {
+        'scores': scores,
+        'labels': labels,
+        'auc': auc,
+    }
+
+
+def summarize_evaluations(
+    experiment_dir: pathlib.Path,
+    results: list[dict[str, object]],
+    total_runs: int,
+) -> str:
+    """Create the aggregate ROC plot and return the printable summary report."""
+    successful_runs = len(results)
+    failed_runs = total_runs - successful_runs
+    lines = [
+        'Evaluation summary',
+        f'Runs in total: {total_runs}',
+        f'Runs evaluated successfully: {successful_runs}',
+        f'Runs skipped or failed: {failed_runs}',
+    ]
+    if not results:
+        lines.extend(['Jets evaluated: 0', 'AUC: unavailable'])
+        return '\n'.join(lines)
+
+    jet_counts = [len(result['labels']) for result in results]
+    if len(set(jet_counts)) == 1:
+        lines.append(f'Jets evaluated per run: {jet_counts[0]}')
+    else:
+        lines.append(
+            f'Jets evaluated per run: {min(jet_counts)}-{max(jet_counts)}'
+        )
+    lines.append(f'Total jet evaluations: {sum(jet_counts)}')
+
+    aucs = np.asarray([result['auc'] for result in results], dtype=float)
+    mean_auc = float(np.mean(aucs))
+    auc_std = float(np.std(aucs))
+    lines.append(
+        f'AUC: {mean_auc:.4f} +/- {auc_std:.4f} '
+        '(mean +/- standard deviation)'
+    )
+
+    fpr_grid = np.linspace(0.0, 1.0, 1001)
+    interpolated_tprs = []
+    for result in results:
+        fpr, tpr, _ = roc_curve(result['labels'], result['scores'])
+        interpolated_tprs.append(np.interp(fpr_grid, fpr, tpr))
+    interpolated_tprs = np.asarray(interpolated_tprs)
+    mean_tpr = np.mean(interpolated_tprs, axis=0)
+    tpr_std = np.std(interpolated_tprs, axis=0)
+    mean_tpr[0], mean_tpr[-1] = 0.0, 1.0
+
+    plot_path = experiment_dir / 'roc_curve_summary.png'
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.plot(
+        fpr_grid, mean_tpr, linewidth=2,
+        label=f'Mean AUC = {mean_auc:.4f} +/- {auc_std:.4f}',
+    )
+    ax.fill_between(
+        fpr_grid,
+        np.clip(mean_tpr - tpr_std, 0.0, 1.0),
+        np.clip(mean_tpr + tpr_std, 0.0, 1.0),
+        alpha=0.25,
+        label='+/- 1 standard deviation',
+    )
+    ax.plot([0, 1], [0, 1], '--', color='gray', linewidth=1)
+    ax.set_xlabel('False Positive Rate', size=16)
+    ax.set_ylabel('True Positive Rate', size=16)
+    ax.legend(prop={'size': 12})
+    fig.tight_layout()
+    fig.savefig(plot_path)
+    plt.close(fig)
+    lines.append(f'Aggregate ROC plot: {plot_path}')
+    return '\n'.join(lines)
+
+
+def evaluate_experiment(experiment_dir: str, num_cores: int) -> int:
+    """Evaluate and summarize all random-seed runs under one experiment."""
+    root = pathlib.Path(experiment_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f'Experiment directory does not exist: {root}')
+    log_path = root / 'evaluation_summary.log'
+    log_path.write_text('', encoding='utf-8')
+
+    total_runs, config_paths, failures, notices = discover_evaluation_runs(root)
+    for notice in notices:
+        print(notice, file=sys.stderr)
+    for random_seed, reason in failures.items():
+        print(f'Skipping random_seed={random_seed}: {reason}', file=sys.stderr)
+
+    successful, runtime_failures, interrupted = evaluate_configs(
+        config_paths, num_cores
+    )
+    failures.update(runtime_failures)
+    if interrupted:
+        message = 'Evaluation interrupted; active subprocesses were stopped.'
+        log_path.write_text(message + '\n', encoding='utf-8')
+        print(message, file=sys.stderr)
+        return 130
+
+    results = []
+    for config_path in successful:
+        try:
+            results.append(_load_result(config_path))
+        except (OSError, ValueError, TypeError) as error:
+            failures[config_path.parent.name] = str(error)
+
+    messages = notices + [
+        f'random_seed={random_seed}: {reason}'
+        for random_seed, reason in sorted(failures.items(), key=lambda item: int(item[0]))
+    ]
+    report = summarize_evaluations(root, results, total_runs)
+    log_contents = '\n'.join(messages + ['', report]).lstrip()
+    log_path.write_text(log_contents + '\n', encoding='utf-8')
+    print(report)
+    return 0 if results else 1
 
 
 if __name__ == "__main__":
-    main(evaluation_config_path())
+    arguments = parse_evaluation_args()
+    if arguments.experiment_dir:
+        raise SystemExit(
+            evaluate_experiment(arguments.experiment_dir, arguments.num_cores)
+        )
+    main(arguments.config)

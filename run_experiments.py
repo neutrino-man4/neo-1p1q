@@ -19,26 +19,13 @@ from omegaconf import OmegaConf
 
 from helpers.config import (
     DEFAULT_CONFIG,
+    SINGLE_THREAD_ENV,
     load_config_values,
+    positive_integer,
     run_directory,
     save_config,
     validate_training_config,
 )
-
-_THREAD_LIMITS = {
-    'OMP_NUM_THREADS': '1',
-    'MKL_NUM_THREADS': '1',
-    'OPENBLAS_NUM_THREADS': '1',
-}
-
-
-def _positive_integer(value: str) -> int:
-    """Parse a strictly positive command-line integer."""
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError('must be at least 1')
-    return parsed
-
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse launcher settings separately from training overrides."""
@@ -49,8 +36,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         '--config', default=DEFAULT_CONFIG,
         help=f'path to the training YAML (default: {DEFAULT_CONFIG})',
     )
-    parser.add_argument('--number-of-runs', type=_positive_integer, default=1)
-    parser.add_argument('--num-cores', type=_positive_integer, default=1)
+    parser.add_argument('--number-of-runs', type=positive_integer, default=1)
+    parser.add_argument('--num-cores', type=positive_integer, default=1)
     parser.add_argument(
         'overrides', nargs='*',
         help='training overrides, e.g. seed=experiment epochs=5 random_seed=42',
@@ -68,7 +55,7 @@ def _start_training(config_path: str, random_seed: int) -> subprocess.Popen:
         f'random_seed={random_seed}',
     ]
     environment = os.environ.copy()
-    environment.update(_THREAD_LIMITS)
+    environment.update(SINGLE_THREAD_ENV)
     print(f'Launching random_seed={random_seed}')
     return subprocess.Popen(command, env=environment, start_new_session=True)
 

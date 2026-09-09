@@ -45,7 +45,7 @@ conda run -n pennylane-gpu-sep2026 python train.py --print-config
 | --- | --- |
 | `train.py` | Training entry point. Resolves configuration, creates the run, snapshots the circuit, builds loaders and the model, trains, checkpoints, and writes final artifacts. |
 | `run_experiments.py` | Repeated-run launcher. Freezes one resolved input configuration and starts consecutive random-seed runs with bounded process parallelism. |
-| `evaluate.py` | Evaluation entry point. Loads a certified run, recreates its saved circuit, scores the test split, calculates ROC AUC, and writes results. |
+| `evaluate.py` | Evaluation entry point. Evaluates one certified run or evaluates and aggregates every random-seed run beneath an experiment directory. |
 | `configs/base.yaml` | Single default configuration for the JetClass VQC. |
 | `configs/README.md` | Detailed description of configuration fields and command line overrides. |
 | `case_reader.py` | JetClass HDF5 loading, fixed feature scaling, class balancing, deterministic shuffling, and internal batching. |
@@ -152,9 +152,10 @@ Evaluation has a separate parser. It accepts exactly one source:
 ```bash
 python evaluate.py --config /models/run_001/42/config.yaml
 python evaluate.py --seed run_001 --random-seed 42 --model-dir /models
+python evaluate.py --experiment-dir /models/run_001 --num-cores 4
 ```
 
-It rejects training overrides and ambiguous sources. When `--model-dir` is omitted, it uses `save_dir` from the current base config.
+It rejects training overrides and ambiguous sources. When `--model-dir` is omitted, single-run seed lookup uses `save_dir` from the current base config. `--num-cores` is valid only with `--experiment-dir` and is not a saved configuration field.
 
 ## Circuit and score construction
 
@@ -294,6 +295,8 @@ The loader then reads the saved test split and class counts using the saved rand
 - `<save_dir>/<seed>/<random_seed>/plots/roc_curve.png`.
 - `<save_dir>/<seed>/<random_seed>/eval.log`.
 
+Experiment-directory evaluation scans immediate numeric subdirectories. A run missing its saved configuration, final model, or circuit snapshot is logged and skipped. Other run failures also do not stop queued evaluations. Each child uses one computational thread and at most `--num-cores` children run simultaneously. Successful ROC curves are interpolated onto a common false-positive-rate grid; their mean and one-standard-deviation band are saved as `<save_dir>/<seed>/roc_curve_summary.png`. `<save_dir>/<seed>/evaluation_summary.log` records skipped runs and the final report. The report includes total, successful, and failed run counts; jet counts; and mean AUC plus or minus the population standard deviation across successful runs.
+
 Loading emits a `RuntimeWarning` because completed epochs and early stopping do not establish convergence. Inspect validation loss and AUC history before treating a model as converged. Clean runs with the same random seed reproduce initialization, data order, and finite-shot sampling when code, data, dependencies, backend, hardware, and thread settings match. Finite-shot resumption does not reproduce an uninterrupted sampling stream because device RNG state is not checkpointed.
 
 The snapshot boundary covers `base.py`, `registry.py`, and `vqc.py`. Data preprocessing, loss code, `QuantumClassifier`, and the Python environment are loaded from the current checkout. Changes to those components can affect evaluation of an old run even when the circuit snapshot is unchanged.
@@ -307,7 +310,7 @@ MPLCONFIGDIR=/tmp/matplotlib conda run -n pennylane-gpu-sep2026 \
   python -m unittest discover -s tests -q
 ```
 
-The suite contained 58 passing tests at the last verification on 2026-09-09. JetClass integration tests are guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist.
+The suite contained 66 passing tests at the last verification on 2026-09-09. JetClass integration tests are guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist.
 
 | Test file | Coverage |
 | --- | --- |
@@ -317,6 +320,7 @@ The suite contained 58 passing tests at the last verification on 2026-09-09. Jet
 | `test_circuit_weights_checkpoint.py` | Pickle round trip for structured rotation and auxiliary weights. |
 | `test_config.py` | Typed and nested OmegaConf overrides, random-seed validation, run paths, resume flag, config printing, and byte-stable save/load. |
 | `test_end_to_end.py` | Training, finite-shot reproducibility, sample-weighted partial batches, inference cardinality, checkpoints, Adam resumption, and optional real JetClass loading. |
+| `test_evaluate_experiment.py` | Experiment discovery, incomplete-run logging, bounded evaluation parallelism, interruption, thread limits, and aggregate ROC reporting. |
 | `test_run_experiments.py` | Launcher configuration ownership, consecutive seeds, concurrency limits, failure handling, interruption, and child thread limits. |
 | `test_saved_run.py` | Saved circuit imports, legacy compatibility, nested paths, config and hash mismatch rejection, final weight validation, checkpoint provenance, CLI restrictions, and mocked training-to-evaluation flow. |
 

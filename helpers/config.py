@@ -20,6 +20,19 @@ from omegaconf import DictConfig, OmegaConf
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "configs", "base.yaml")
 ORCHESTRATION_KEYS = ('number_of_runs', 'num_cores')
+SINGLE_THREAD_ENV = {
+    'OMP_NUM_THREADS': '1',
+    'MKL_NUM_THREADS': '1',
+    'OPENBLAS_NUM_THREADS': '1',
+}
+
+
+def positive_integer(value: str) -> int:
+    """Parse a strictly positive command-line integer."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError('must be at least 1')
+    return parsed
 
 
 def load_config_values(config_path: str, overrides: Iterable[str] = ()) -> DictConfig:
@@ -103,12 +116,16 @@ def save_config(cfg: DictConfig, path: str) -> None:
     OmegaConf.save(cfg, path, resolve=True)
 
 
-def evaluation_config_path(argv: list[str] | None = None) -> str:
-    """Locate a saved run YAML without accepting training-option overrides."""
-    parser = argparse.ArgumentParser(description="Evaluate a saved training run.")
+def parse_evaluation_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse single-run or experiment-directory evaluation arguments."""
+    parser = argparse.ArgumentParser(description="Evaluate saved training runs.")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--config', help='Path to the saved run config.yaml')
     source.add_argument('--seed', help='Run name under the model directory')
+    source.add_argument(
+        '--experiment-dir',
+        help='Experiment directory containing random-seed run directories',
+    )
     parser.add_argument(
         '--random-seed', type=int, default=None,
         help='Random-seed directory within the selected run',
@@ -117,14 +134,35 @@ def evaluation_config_path(argv: list[str] | None = None) -> str:
         '--model-dir', default=None,
         help='Model directory (default: save_dir from configs/base.yaml)',
     )
+    parser.add_argument(
+        '--num-cores', type=positive_integer, default=1,
+        help='Maximum simultaneous evaluations for --experiment-dir (default: 1)',
+    )
     args = parser.parse_args(argv)
+    if args.experiment_dir:
+        if args.model_dir is not None or args.random_seed is not None:
+            parser.error('--model-dir and --random-seed cannot be used with --experiment-dir')
+        args.experiment_dir = os.path.abspath(os.path.expanduser(args.experiment_dir))
+        return args
+    if args.num_cores != 1:
+        parser.error('--num-cores can only be used with --experiment-dir')
     if args.config:
         if args.model_dir is not None or args.random_seed is not None:
             parser.error('--model-dir and --random-seed can only be used with --seed')
-        return os.path.abspath(os.path.expanduser(args.config))
+        args.config = os.path.abspath(os.path.expanduser(args.config))
+        return args
     if args.seed in ('.', '..') or os.path.basename(args.seed) != args.seed:
         parser.error('--seed must be a run directory name')
     if args.random_seed is not None and args.random_seed < 0:
         parser.error('--random-seed must be an integer greater than or equal to 0')
     model_dir = args.model_dir or OmegaConf.load(DEFAULT_CONFIG).save_dir
-    return str(run_directory(model_dir, args.seed, args.random_seed) / 'config.yaml')
+    args.config = str(run_directory(model_dir, args.seed, args.random_seed) / 'config.yaml')
+    return args
+
+
+def evaluation_config_path(argv: list[str] | None = None) -> str:
+    """Locate one saved run YAML without accepting experiment-directory mode."""
+    args = parse_evaluation_args(argv)
+    if args.experiment_dir:
+        raise ValueError('--experiment-dir does not identify a single run config.')
+    return args.config

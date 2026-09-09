@@ -150,4 +150,14 @@ python evaluate.py --seed run_001 --random-seed 42 --model-dir /path/to/saved_mo
 
 Evaluation verifies the saved configuration, circuit files, and final weights before running inference. It does not use an epoch checkpoint as a substitute for `trained_model.pickle`.
 
+Evaluate all random-seed runs beneath one experiment directory with:
+
+```bash
+python evaluate.py \
+  --experiment-dir /path/to/saved_models/run_001 \
+  --num-cores 4
+```
+
+`--num-cores` defaults to 1 and is used only for experiment-directory evaluation. Each numeric subdirectory counts as one run. Incomplete and failed runs are recorded in `evaluation_summary.log` while the remaining runs continue. Successful results are combined into `roc_curve_summary.png`, whose band is one standard deviation across interpolated ROC curves. The printed and logged AUC error is the standard deviation across successful runs.
+
 Saved runs created before `random_seed` was introduced retain the historical `<save_dir>/<seed>/` layout and can still be resumed or evaluated without adding the new field to their configurations.
