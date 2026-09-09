@@ -81,7 +81,7 @@ The circuit consumes `wires * num_layers` particles per jet by default. Set `num
 | `wires` | Number of data qubits. |
 | `num_layers` | Number of encoding, entangling, and trainable rotation layers. Each layer consumes another group of `wires` particles. |
 | `shots` | Number of measurement shots. A nonpositive value selects analytic expectation values. |
-| `device_name` | PennyLane device name. The default requirements install `lightning.kokkos`; `default.qubit` is useful for small CPU runs. |
+| `device_name` | PennyLane device name. The default is the fast CPU simulator `lightning.qubit`; `default.qubit` is useful for debugging small runs. |
 | `backend` | PennyLane QNode interface. The maintained training path uses `autograd`. |
 | `circuit_type` | Circuit name from `quantum/circuits/registry.py`. The supported value is `normal`. |
 | `operations_per_qubit` | Trainable rotation parameters per qubit and layer. The current VQC requires `3` for its RZ, RY, and RX rotations. |

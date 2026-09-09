@@ -20,7 +20,7 @@ wires: 4
 num_layers: 1
 shots: 2500
 backend: 'autograd'
-device_name: 'lightning.kokkos'
+device_name: 'lightning.qubit'
 circuit_type: 'normal'
 operations_per_qubit: 3
 aux_weights:
