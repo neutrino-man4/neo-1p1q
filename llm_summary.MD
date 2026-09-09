@@ -348,14 +348,10 @@ These files are not called by `train.py` or `evaluate.py`:
 - `helpers/path_setter.py` contains an unused older path mapping.
 - `helpers/get_free_gpu_id.py` is an unused NVIDIA selection helper. It imports pandas, which is not a maintained runtime dependency.
 - `plotters/plot_hist.py` expects older fidelity and cost arrays from a quantum autoencoder workflow.
-- `scratch/` contains exploratory scripts and committed plots tied to private paths and older data studies.
-- `condor/` and `condor_example/` contain stale HTCondor files. Their submit files reference deleted `executable.sh` scripts and cannot launch the maintained entry points as stored.
-- `network_runs/logs.log` and the committed files under `scratch/plots/` are historical outputs.
+- `network_runs/logs.log` is a historical output.
 - `summary.txt` is an old task prompt, not application documentation.
 
 Within maintained modules, `select_subjet_constituents`, the semiclassical loss functions, `batched_VQC_cost`, `QuantumClassifier.load_weights`, and the evictable EOS path are not used by the supported entry points. Do not build new behavior on them without first confirming that the user wants those paths restored.
-
-`future.MD` is ignored by Git and may exist only in the local workspace. It records deferred Quantum Fisher Information work. `problems.MD` was intentionally removed because no separate active backlog remains.
 
 ## Before committing changes
 

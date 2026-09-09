@@ -16,7 +16,6 @@ train.sh
 # secrets / local-only
 .env
 .Xauthority
-condor/.Xauthority
 
 # python cache
 __pycache__/
@@ -34,7 +33,3 @@ best_models/
 *.h5
 *.npy
 *.pkl
-
-# stale HTCondor staging copies (regenerated at submit time, not source)
-condor/qae_hep/
-condor/hydra/
