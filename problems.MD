@@ -3,18 +3,6 @@
 This is the active development backlog for the supported JetClass VQC pipeline. Completed work
 belongs in Git history rather than this file. Status checked against the code on 2026-09-09.
 
-## P10: the loader reads and converts more data than requested
-
-`CASEJetClassDataset._load_file()` reads all 100,000 rows before `_read_class()` selects the
-requested count. In the current files, this reads 244 MB per class and split even when the default
-configuration needs only 1,000 training rows or 200 validation rows.
-
-Pass the remaining row count into `_load_file()` and slice both HDF5 datasets before converting
-them to arrays. Keep the existing loader interface.
-
-Done when a partial read touches only the requested HDF5 rows and returns the same values and
-labels.
-
 ## P13: installation metadata is incomplete
 
 `train.py` imports OmegaConf and WandB, but neither package is listed in `requirements.txt`.

@@ -1,8 +1,9 @@
-'''
-Date: August 2024
-Author: Aritra Bal, ETP
-Description: This script contains the data loader classes for the MC Datasets used in the studies performed for the CMS analysis EXO-22-026
-'''
+"""
+Load and batch the Monte Carlo datasets used for the CMS EXO-22-026 studies.
+
+Author: Aritra Bal (ETP)
+Date: 2026-09-09
+"""
 
 import os
 import h5py
@@ -102,7 +103,7 @@ class CASEJetClassDataset(IterableDataset):
         data_scaled = ((data_reshaped - assumed_limits[type][0])/(assumed_limits[type][1]-assumed_limits[type][0]))*(max-min) + min # scale using fixed values of 
         return data_scaled.reshape(data_shape[0], data_shape[1])
     
-    def _load_file(self, file_path:str) -> np.ndarray:
+    def _load_file(self, file_path:str, max_rows:int) -> np.ndarray:
         """
         Load one .h5 file and return its preprocessed jets.
 
@@ -113,12 +114,17 @@ class CASEJetClassDataset(IterableDataset):
         this is asserted so a non-sorted file fails loudly instead of silently
         feeding the wrong particles.
 
+        Args:
+            file_path: HDF5 file to read.
+            max_rows: Maximum number of leading jets to read.
+
         Returns:
             np.ndarray: shape (M, n_qubits, 3).
         """
+        rows = slice(0, max_rows)
         with h5py.File(file_path, 'r') as file:
-            jet_pt = np.array(file[self.feature_key])[:, self.jpt_index]
-            jet_etaphipt = np.array(file[self.data_key][()])
+            jet_pt = np.array(file[self.feature_key][rows, self.jpt_index])
+            jet_etaphipt = np.array(file[self.data_key][rows])
         pt_col = jet_etaphipt[..., self.pt_index]
         if not nnp.all(nnp.diff(pt_col, axis=-1) <= 1.0e-6):
             raise ValueError(
@@ -143,10 +149,9 @@ class CASEJetClassDataset(IterableDataset):
         for file_path in filelist:
             if count >= n_target:
                 break
-            jets = self._load_file(file_path)
-            take = min(len(jets), n_target - count)
-            chunks.append(jets[:take])
-            count += take
+            jets = self._load_file(file_path, n_target - count)
+            chunks.append(jets)
+            count += len(jets)
         if count < n_target:
             self._log(f"WARNING: requested {n_target} '{name}' jets but only {count} were available")
         data = np.concatenate(chunks, axis=0) if chunks else np.empty((0, self.n_qubits, 3))
