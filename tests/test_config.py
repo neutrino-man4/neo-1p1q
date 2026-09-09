@@ -4,7 +4,7 @@ save the exact merged config to one reusable file. These tests pin the round
 trip that matters -- a run's config.yaml must reload identically and be usable
 as the --config for a later run.
 Author: Aritra Bal (ETP)
-2026-09-05
+Date: 2026-09-09
 """
 import os
 import sys
@@ -39,6 +39,11 @@ class TestLoadConfig(unittest.TestCase):
         self.assertEqual(cfg.aux_weights.scale_factor, 2.5)
         self.assertEqual(cfg.n_signal, 40)
         self.assertEqual(cfg.signal, 'TTBar_')  # untouched base key preserved
+
+    def test_resume_flag_sets_resume(self):
+        cfg = self._run(['--resume', 'seed=run'])
+        self.assertTrue(cfg.resume)
+        self.assertEqual(cfg.seed, 'run')
 
     def test_print_config_exits(self):
         with self.assertRaises(SystemExit):

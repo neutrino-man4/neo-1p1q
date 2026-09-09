@@ -1,13 +1,9 @@
 """
-D10: end-to-end validation. train.py itself can't run (its pre-existing,
-deliberately-unfixed config_name bug, see AUDIT.md), so this exercises the
-same pieces train.py/evaluate.py wire together -- QuantumTrainer's full
-run_training_loop, a real checkpoint save/load round trip, and the
-evaluate.py-equivalent inference pipeline -- built directly, without hydra.
+End-to-end validation of training, checkpoint resume, and inference.
 
 Includes regression tests for the training, validation, and inference paths.
 Author: Aritra Bal (ETP)
-2026-09-05
+Date: 2026-09-09
 """
 import os
 import tempfile
@@ -23,6 +19,7 @@ import case_reader as cr
 import helpers.utils as ut
 import quantum.architectures as arch
 import quantum.losses as loss
+from helpers.trained_run import latest_checkpoint
 from quantum.circuits.base import CircuitWeights
 
 _JETCLASS_DIR = '/ceph/abal/JetClass'
@@ -71,6 +68,10 @@ def _build_trainer(save_dir: str, batch_size: int, epochs: int, n_qubits: int = 
         model=vqc, lr=0.05, optimizer=optimizer, loss_fn=loss.VQC_cost,
         save=True, train_max_n=batch_size * 2, valid_max_n=batch_size * 2,
         epochs=epochs, wandb=None, loss_type='MSE',
+        checkpoint_config={
+            'epochs': epochs, 'wires': n_qubits, 'num_layers': n_layers,
+        },
+        circuit_signature={'test': 'fixed'},
         init_weights=init_weights, batch_size=batch_size, logger=__import__('loguru').logger,
     )
     trainer.set_directories(save_dir)
@@ -95,40 +96,69 @@ class TestFullTrainingLoop(unittest.TestCase):
                 self.assertTrue(onp.isfinite(v))
 
             checkpoint_dir = os.path.join(save_dir, 'checkpoints')
-            self.assertTrue(os.listdir(checkpoint_dir))  # per-epoch checkpoints were written
-            trained_path = os.path.join(save_dir, 'trained_model.pickle')
-            self.assertTrue(os.path.isfile(trained_path))
+            self.assertEqual(
+                sorted(os.listdir(checkpoint_dir)),
+                ['ep0000.pickle', 'ep0001.pickle', 'ep0002.pickle'],
+            )
 
     def test_checkpoint_round_trip_and_resume_training(self) -> None:
-        """A real saved checkpoint must reload and support one more training step."""
-        with tempfile.TemporaryDirectory() as save_dir:
-            vqc, trainer = _build_trainer(save_dir, batch_size=1, epochs=1)
-            train_loader = _make_batches(2, batch_size=1, n_qubits=4, n_layers=1)
-            val_loader = _make_batches(2, batch_size=1, n_qubits=4, n_layers=1)
-            trainer.run_training_loop(train_loader, val_loader)
-
-            trained_path = os.path.join(save_dir, 'trained_model.pickle')
-            vqc2 = arch.QuantumClassifier(
-                wires=4, shots=None, dev_name='default.qubit',
-                layers=1, backend_name='autograd', test=False,
-            )
-            vqc2.set_circuit('normal', operations_per_qubit=3)
-            vqc2.load_weights(trained_path, train=True)
-
-            self.assertIsInstance(vqc2.current_weights, CircuitWeights)
-            self.assertEqual(vqc2.current_weights.rot.shape, (1, 4, 3))
-
-            # one more training step from the reloaded weights must not crash
-            optimizer = qml.AdamOptimizer(stepsize=0.05)
-            trainer2 = arch.QuantumTrainer(
-                model=vqc2, lr=0.05, optimizer=optimizer, loss_fn=loss.VQC_cost,
-                save=False, epochs=1, init_weights=vqc2.current_weights,
-                batch_size=1, logger=None,
-            )
-            data = np.array(onp.random.uniform(-1, 1, size=(1, 4, 3)))
+        """A resumed Adam step must match an uninterrupted step exactly."""
+        with tempfile.TemporaryDirectory() as save_dir, tempfile.TemporaryDirectory() as resumed_dir:
+            _, trainer = _build_trainer(save_dir, batch_size=1, epochs=2)
+            first = np.array(onp.random.uniform(-1, 1, size=(1, 4, 3)))
+            second = np.array(onp.random.uniform(-1, 1, size=(1, 4, 3)))
             labels = onp.array([1])
-            cost = trainer2.iteration(data, labels=labels, train=True)
-            self.assertTrue(onp.isfinite(cost))
+            first_cost = trainer.iteration(first, labels=labels, train=True)
+            trainer.current_epoch = 1
+            trainer.history = {
+                'train': [first_cost], 'val': [0.6, 0.5], 'auc': [0.5, 0.6],
+            }
+            checkpoint = trainer.save_checkpoint()
+            payload = ut.Unpickle(checkpoint)
+
+            expected_cost = trainer.iteration(second, labels=labels, train=True)
+            expected_weights = trainer.current_weights
+
+            _, resumed = _build_trainer(resumed_dir, batch_size=1, epochs=2)
+            resumed.restore_checkpoint(payload)
+            actual_cost = resumed.iteration(second, labels=labels, train=True)
+
+            self.assertEqual(resumed.current_epoch, 2)
+            self.assertEqual(resumed.history, payload['training']['history'])
+            self.assertAlmostEqual(actual_cost, expected_cost)
+            onp.testing.assert_allclose(resumed.current_weights.rot, expected_weights.rot)
+            for name in expected_weights.aux:
+                onp.testing.assert_allclose(
+                    resumed.current_weights.aux[name], expected_weights.aux[name]
+                )
+            self.assertEqual(resumed.optim.t, trainer.optim.t)
+            for actual, expected in zip(resumed.optim.fm, trainer.optim.fm):
+                onp.testing.assert_allclose(actual, expected)
+            for actual, expected in zip(resumed.optim.sm, trainer.optim.sm):
+                onp.testing.assert_allclose(actual, expected)
+
+    def test_resumed_loop_starts_at_next_epoch(self) -> None:
+        """Resume must preserve history and skip completed epochs."""
+        with tempfile.TemporaryDirectory() as save_dir, tempfile.TemporaryDirectory() as resumed_dir:
+            _, trainer = _build_trainer(save_dir, batch_size=1, epochs=2)
+            data = np.array(onp.random.uniform(-1, 1, size=(1, 4, 3)))
+            first_cost = trainer.iteration(data, labels=onp.array([1]), train=True)
+            trainer.current_epoch = 1
+            trainer.history = {
+                'train': [first_cost], 'val': [0.6, 0.5], 'auc': [0.5, 0.6],
+            }
+            payload = ut.Unpickle(trainer.save_checkpoint())
+
+            _, resumed = _build_trainer(resumed_dir, batch_size=1, epochs=2)
+            resumed.restore_checkpoint(payload)
+            history = resumed.run_training_loop(
+                _make_batches(2, 1, 4, 1), _make_batches(2, 1, 4, 1)
+            )
+
+            self.assertEqual(len(history['train']), 2)
+            self.assertEqual(len(history['val']), 3)
+            self.assertEqual(resumed.current_epoch, 2)
+            self.assertEqual(os.listdir(os.path.join(resumed_dir, 'checkpoints')), ['ep0002.pickle'])
 
     def test_batched_training_and_validation_include_partial_batch(self) -> None:
         """Batch scores retain their dimension and epoch losses weight every sample equally."""
@@ -179,14 +209,14 @@ class TestEvaluateEquivalentInference(unittest.TestCase):
         trainer.run_training_loop(
             _make_batches(2, 1, 4, 1), _make_batches(2, 1, 4, 1)
         )
-        trained_path = os.path.join(save_dir, 'trained_model.pickle')
+        checkpoint = ut.Unpickle(latest_checkpoint(save_dir))
 
         vqc2 = arch.QuantumClassifier(
             wires=4, shots=None, dev_name='default.qubit',
             layers=1, backend_name='autograd', test=False,
         )
         vqc2.set_circuit('normal', operations_per_qubit=3)
-        vqc2.load_weights(trained_path)
+        vqc2.current_weights = checkpoint['weights']
         return vqc2
 
     def test_run_inference_runs_without_total_batches(self) -> None:
@@ -228,9 +258,7 @@ class TestKnownPreExistingBugs(unittest.TestCase):
         with tempfile.TemporaryDirectory() as save_dir:
             vqc, trainer = _build_trainer(save_dir, batch_size=1, epochs=1)
             trainer.run_training_loop(_make_batches(2, 1, 4, 1), _make_batches(2, 1, 4, 1))
-            trained_path = os.path.join(save_dir, 'trained_model.pickle')
-
-            resumed_init_weights = ut.Unpickle(trained_path)
+            resumed_init_weights = ut.Unpickle(latest_checkpoint(save_dir))
             self.assertIsInstance(resumed_init_weights, dict)  # not a CircuitWeights
 
             optimizer = qml.AdamOptimizer(stepsize=0.05)

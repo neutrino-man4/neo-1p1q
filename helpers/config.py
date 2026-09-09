@@ -7,7 +7,7 @@ here with OmegaConf directly -- no Hydra. `cfg` stays a DictConfig, so the dot
 and bracket access the rest of the code relies on is unchanged.
 
 Author: Aritra Bal (ETP)
-2026-09-05
+Date: 2026-09-09
 """
 import argparse
 import os
@@ -23,7 +23,7 @@ def load_config(default_config: str = DEFAULT_CONFIG) -> DictConfig:
     """
     Parse the CLI and return the merged config.
 
-    Usage: ``python train.py [--config PATH] [--print-config] [key=value ...]``
+    Usage: ``python train.py [--config PATH] [--resume] [--print-config] [key=value ...]``
     Overrides use OmegaConf dotlist syntax, e.g. ``epochs=5 aux_weights.bias=0.2``.
     A saved run config (``<save_dir>/<seed>/config.yaml``) can be passed straight
     back in via ``--config`` to reproduce that run.
@@ -44,6 +44,10 @@ def load_config(default_config: str = DEFAULT_CONFIG) -> DictConfig:
         help="print the resolved config and exit",
     )
     parser.add_argument(
+        '--resume', action='store_true',
+        help='resume from the latest checkpoint for the selected run',
+    )
+    parser.add_argument(
         "overrides", nargs="*",
         help="OmegaConf overrides, e.g. seed=run1 epochs=5 aux_weights.bias=0.2",
     )
@@ -52,6 +56,8 @@ def load_config(default_config: str = DEFAULT_CONFIG) -> DictConfig:
     cfg = OmegaConf.load(args.config)
     if args.overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(args.overrides))
+    if args.resume:
+        cfg.resume = True
 
     if args.print_config:
         print(OmegaConf.to_yaml(cfg))

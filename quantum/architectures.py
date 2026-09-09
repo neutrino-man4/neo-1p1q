@@ -7,9 +7,9 @@ Date: 2026-09-09
 
 # pylint: disable=maybe-no-member
 from itertools import combinations
-import json
 import os
 import pathlib
+import pickle
 import subprocess
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -312,6 +312,8 @@ class QuantumTrainer:
         wandb: Weights & Biases logger instance
         lr_decay: Whether to apply learning rate decay
         loss_type: Type of loss function ('BCE', etc.)
+        checkpoint_config: Resolved run configuration stored in each checkpoint
+        circuit_signature: Saved circuit fingerprints stored in each checkpoint
         **kwargs: Additional keyword arguments
     """
     
@@ -330,6 +332,8 @@ class QuantumTrainer:
         wandb: Optional[Any] = None,
         lr_decay: bool = False,
         loss_type: str = 'MSE',
+        checkpoint_config: Optional[Dict[str, Any]] = None,
+        circuit_signature: Optional[Dict[str, str]] = None,
         **kwargs: Any
     ) -> None:
         self.model = model
@@ -352,6 +356,8 @@ class QuantumTrainer:
         self.improv = improv
         self.is_evictable = False
         self.wandb = wandb
+        self.checkpoint_config = checkpoint_config
+        self.circuit_signature = circuit_signature
         
         # Training state
         self.current_weights = self.init_weights
@@ -359,6 +365,8 @@ class QuantumTrainer:
         self.optim = optimizer
         self.quantum_loss = loss_fn
         self.history: Dict[str, List[float]] = {'train': [], 'val': [], 'auc': []}
+        self.n_decays = 0
+        self.last_decay = 0
         
         # Directories (to be set later)
         self.save_dir: Optional[str] = None
@@ -446,12 +454,10 @@ class QuantumTrainer:
             Validation includes epoch zero, before any training updates.
         """
         self.print_params('Initial weights: ')
-        n_decays = 0
-        last_decay = 0
         complete = False
         
         epoch_progress = tqdm(
-            range(self.epochs + 1),
+            range(self.current_epoch, self.epochs + 1),
             desc="Epochs",
             unit="epoch",
         )
@@ -469,27 +475,25 @@ class QuantumTrainer:
                 
                 if improvement < self.improv:
                     if self.lr_decay:
-                        if (n_decays < self.patience) and ((n_epoch - last_decay) >= 2):
-                            last_decay = self.current_epoch
-                            n_decays += 1
+                        if (self.n_decays < self.patience) and ((n_epoch - self.last_decay) >= 2):
+                            self.last_decay = self.current_epoch
+                            self.n_decays += 1
                             self.optim.stepsize *= 0.5
                             self.logger.info(
                                 f'No improvement observed over last 3 epochs. \n'
                                 f'Learning rate decayed to {self.optim.stepsize} at epoch {n_epoch}'
                             )
-                        elif n_decays >= self.patience:
+                        elif self.n_decays >= self.patience:
                             self.logger.info(
                                 f"\n\nNo improvement over last 3 epochs and {self.patience} "
                                 f"decay steps. Early stopping!\n\n"
                             )
-                            self.save(self.save_dir, name='trained_model.pickle')
                             complete = True
                             break
                     else:
                         self.logger.info(
                             "\n\nNo improvement over last 3 epochs. Early stopping!\n\n"
                         )
-                        self.save(self.save_dir, name='trained_model.pickle')
                         complete = True
                         break
             
@@ -586,17 +590,11 @@ class QuantumTrainer:
             
             # Saving
             if self.saving:
-                name = None
-                if n_epoch == self.epochs:
-                    name = 'trained_model.pickle'
-                elif n_epoch == 0:
-                    name = 'init_weights.pickle'
-                
-                self.save(self.save_dir, name=name)
+                checkpoint_path = self.save_checkpoint()
                 
                 if self.is_evictable and n_epoch > 0:
                     print('Will copy over checkpoints')
-                    checkpoint_name = f'ep{self.current_epoch:02}.pickle'
+                    checkpoint_name = checkpoint_path.name
                     try:
                         tmpfile = (
                             f"{os.environ['EOS_MGM_URL']}://eos/user/"
@@ -627,64 +625,52 @@ class QuantumTrainer:
             print(prefix)
         print('autograd weights:', self.current_weights, '\n')
     
-    def save(self, save_dir: str, name: Optional[str] = None) -> None:
-        """
-        Save the model weights to a specified directory.
-        
-        Args:
-            save_dir: Directory where the model weights will be saved
-            name: The name of the file to save. If not provided, 
-                  the file name will be based on the current epoch
-        """
-        opt_name = None
-        
-        if name is None:
-            name = f'ep{self.current_epoch:02}.pickle'
-            opt_name = f'optimizer_ep{self.current_epoch:02}.json'
-        
-        if 'trained' not in name:
-            save_dir = self.checkpoint_dir
-        else:
-            opt_name = 'optimizer.json'
-        
-        ut.Pickle({'weights': self.current_weights}, name, path=save_dir)
-        
-        # Save optimizer state
-        try:
-            optim_dict = {
+    def save_checkpoint(self) -> pathlib.Path:
+        """Atomically save all state needed to resume after the current epoch."""
+        if self.checkpoint_dir is None:
+            raise RuntimeError('Checkpoint directory has not been configured.')
+        if self.checkpoint_config is None or self.circuit_signature is None:
+            raise RuntimeError('Checkpoint provenance has not been configured.')
+        payload = {
+            'weights': self.current_weights,
+            'optimizer': {
+                'name': type(self.optim).__name__,
                 'stepsize': self.optim.stepsize,
                 'beta1': self.optim.beta1,
                 'beta2': self.optim.beta2,
-                'epsilon': self.optim.eps,
-                'fm': self.optim.fm,
-                'sm': self.optim.sm,
-                't': self.optim.t
-            }
-            
-            with open(os.path.join(save_dir, opt_name), 'w') as f:
-                json.dump(optim_dict, f)
-            print("Optimizer state saved")
-        except Exception as e:
-            print(f"Error saving optimizer state: {str(e)}")
+                'eps': self.optim.eps,
+                'accumulation': self.optim.accumulation,
+            },
+            'training': {
+                'config': self.checkpoint_config,
+                'implementation': self.circuit_signature,
+                'completed_epoch': self.current_epoch,
+                'history': self.history,
+                'n_decays': self.n_decays,
+                'last_decay': self.last_decay,
+            },
+        }
+        path = pathlib.Path(self.checkpoint_dir) / f'ep{self.current_epoch:04d}.pickle'
+        temporary = path.with_suffix('.pickle.tmp')
+        with temporary.open('wb') as stream:
+            pickle.dump(payload, stream)
+        temporary.replace(path)
+        return path
     
-    def get_current_epoch(self) -> int:
-        """
-        Get the current epoch number during training.
-        
-        Returns:
-            The current epoch number
-        """
-        return self.current_epoch
-    
-    def set_current_epoch(self, epoch: int) -> None:
-        """
-        Set the current epoch to one after the supplied checkpoint epoch.
-        
-        Args:
-            epoch: Last completed checkpoint epoch
-        """
-        self.current_epoch = epoch + 1
-        print("Resume training from epoch:", epoch + 1)
+    def restore_checkpoint(self, payload: Dict[str, Any]) -> None:
+        """Restore weights, Adam accumulation, history, and the next epoch."""
+        optimizer = payload['optimizer']
+        training = payload['training']
+        self.current_weights = payload['weights']
+        self.optim.stepsize = optimizer['stepsize']
+        self.optim.beta1 = optimizer['beta1']
+        self.optim.beta2 = optimizer['beta2']
+        self.optim.eps = optimizer['eps']
+        self.optim.accumulation = optimizer['accumulation']
+        self.history = training['history']
+        self.n_decays = training.get('n_decays', 0)
+        self.last_decay = training.get('last_decay', 0)
+        self.current_epoch = training['completed_epoch'] + 1
     
     def set_directories(self, save_dir: str) -> None:
         """

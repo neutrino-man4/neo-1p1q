@@ -15,18 +15,6 @@ def getIndex(which:str='particle',feat:str=None)->int:
         idx=-1
     return idx
 
-def get_current_epoch(path:str)->int:
-    import re
-    filename=os.path.split(path)[-1]
-    match = re.search(r'ep(\d+)\.pickle', filename)
-    if match:
-        number = int(match.group(1))
-    else:
-        print("No match found")
-        number=-1
-        import sys;sys.exit(1)
-    return number
-
 def print_events(events,name=None):
     '''Function for printing nested dictionary with at most 3 levels, with final value being a numpy.ndarry, prints the shape of the array'''
     if name: print (name)

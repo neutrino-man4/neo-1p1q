@@ -22,7 +22,9 @@ from helpers.config import DEFAULT_CONFIG, evaluation_config_path, load_config, 
 from helpers.trained_run import (
     CIRCUIT_FILES,
     implementation_signature,
+    latest_checkpoint,
     load_circuit_snapshot,
+    load_training_checkpoint,
     load_trained_run,
     save_circuit_snapshot,
     save_trained_run,
@@ -57,6 +59,23 @@ class TestSavedRun(unittest.TestCase):
         self.history = {'train': [0.5], 'val': [0.6, 0.4], 'auc': [0.5, 0.7]}
         save_trained_run(str(self.root), self.cfg, self.model, self.weights,
                          self.history, implementation_signature(self.circuit_dir))
+
+    def _checkpoint_payload(self) -> dict:
+        """Return a valid epoch-zero checkpoint for this saved run."""
+        return {
+            'weights': self.weights,
+            'optimizer': {
+                'name': 'AdamOptimizer', 'stepsize': self.cfg.lr,
+                'beta1': 0.9, 'beta2': 0.99, 'eps': 1e-8, 'accumulation': None,
+            },
+            'training': {
+                'config': OmegaConf.to_container(self.cfg, resolve=True),
+                'implementation': implementation_signature(self.circuit_dir),
+                'completed_epoch': 0,
+                'history': {'train': [], 'val': [0.5], 'auc': [0.5]},
+                'n_decays': 0, 'last_decay': 0,
+            },
+        }
 
     def test_round_trip_preserves_nondefault_circuit_and_scores(self) -> None:
         with self.assertWarnsRegex(RuntimeWarning, 'does not establish convergence'):
@@ -151,19 +170,50 @@ class TestSavedRun(unittest.TestCase):
             'save_dir': str(self.root.parent), 'seed': self.root.name,
             'resume': True, 'wires': 99, 'new_option': {'value': 99},
         })
-        checkpoint = self.root / 'ep01.pickle'
-        checkpoint.write_bytes(pickle.dumps({'weights': self.weights}))
+        checkpoint_dir = self.root / 'checkpoints'
+        checkpoint_dir.mkdir()
+        (checkpoint_dir / 'ep0000.pickle').write_bytes(
+            pickle.dumps(self._checkpoint_payload())
+        )
         wandb = MagicMock()
         wandb.run.id = 'offline-test'
         with patch.object(train, 'wandb', wandb), patch.object(train, 'logger'), \
-                patch.object(train.glob, 'glob', return_value=[str(checkpoint)]), \
                 patch.object(QuantumClassifier, 'from_config', side_effect=RuntimeError('stop before training')):
             with self.assertRaisesRegex(RuntimeError, 'stop before training'):
                 train.main(incoming)
         saved = OmegaConf.load(self.config_path)
         self.assertEqual(saved.wires, 2)
         self.assertEqual(saved.new_option.value, 7)
-        self.assertTrue(saved.resume)
+        self.assertFalse(saved.resume)
+
+    def test_latest_checkpoint_uses_numeric_epoch(self) -> None:
+        checkpoint_dir = self.root / 'checkpoints'
+        checkpoint_dir.mkdir()
+        for name in ('ep9.pickle', 'ep10.pickle', 'epinvalid.pickle'):
+            (checkpoint_dir / name).touch()
+        self.assertEqual(latest_checkpoint(self.root).name, 'ep10.pickle')
+
+    def test_checkpoint_provenance_is_required(self) -> None:
+        checkpoint_dir = self.root / 'checkpoints'
+        checkpoint_dir.mkdir()
+        (checkpoint_dir / 'ep0000.pickle').write_bytes(
+            pickle.dumps({'weights': self.weights})
+        )
+        with self.assertRaisesRegex(ValueError, 'missing weights, optimizer state, or training state'):
+            load_training_checkpoint(
+                self.root, self.cfg, implementation_signature(self.circuit_dir)
+            )
+
+    def test_checkpoint_circuit_mismatch_is_rejected(self) -> None:
+        checkpoint_dir = self.root / 'checkpoints'
+        checkpoint_dir.mkdir()
+        checkpoint = self._checkpoint_payload()
+        checkpoint['training']['implementation'] = {}
+        (checkpoint_dir / 'ep0000.pickle').write_bytes(pickle.dumps(checkpoint))
+        with self.assertRaisesRegex(ValueError, 'saved circuit implementation'):
+            load_training_checkpoint(
+                self.root, self.cfg, implementation_signature(self.circuit_dir)
+            )
 
     def test_training_entry_point_saves_effective_options_and_final_weights(self) -> None:
         import train

@@ -87,8 +87,19 @@ Every run writes its resolved configuration, including overrides and newly added
 the active `quantum/circuits` package to `<save_dir>/<seed>/circuits/`. Training and evaluation use
 that saved circuit implementation. A successful run with `save=true` records the configuration,
 circuit-file fingerprints, completed epoch count, and final weights in `trained_model.pickle`.
-Resume reads the saved settings and circuit before continuing; other training-option overrides
-are ignored, and optimizer restoration remains unimplemented.
+Each completed epoch also writes an atomic resume checkpoint to
+`<save_dir>/<seed>/checkpoints/epNNNN.pickle`. It contains the weights, Adam state, history, next
+epoch, and configuration and circuit provenance.
+
+Resume from the latest checkpoint with either form:
+
+```bash
+python train.py --config /path/to/saved_models/run_001/config.yaml --resume
+python train.py seed=run_001 save_dir=/path/to/saved_models resume=true
+```
+
+Resume uses the original saved settings and continues until their configured epoch limit. Other
+training-option overrides are ignored.
 
 ## Evaluation
 

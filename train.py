@@ -23,6 +23,7 @@ from helpers.config import load_config, save_config
 from helpers.trained_run import (
     implementation_signature,
     load_circuit_snapshot,
+    load_training_checkpoint,
     save_circuit_snapshot,
     save_trained_run,
     validate_weights,
@@ -41,15 +42,13 @@ def main(cfg: DictConfig):
         cfg = OmegaConf.load(os.path.join(save_dir, 'config.yaml'))
         OmegaConf.resolve(cfg)
         logger.warning('Resume uses the saved configuration; other training-option overrides are ignored.')
-        logger.warning('Resume still starts a fresh optimizer; optimizer-state restoration is not implemented.')
     else:
         if os.path.exists(os.path.join(save_dir, 'config.yaml')):
             raise FileExistsError(f'Run already exists at {save_dir}; choose a new seed or resume it.')
         for key in ('save_dir', 'data_dir', 'dump', 'base_dir'):
             cfg[key] = os.path.abspath(os.path.expanduser(cfg[key]))
-    cfg.resume = resume
-    cfg.seed = str(cfg.seed)
-    cfg.save_dir = os.path.dirname(save_dir)
+        cfg.seed = str(cfg.seed)
+        cfg.save_dir = os.path.dirname(save_dir)
     # Set up directories
     plot_dir = os.path.join(save_dir, 'plots')
     pathlib.Path(plot_dir).mkdir(parents=True, exist_ok=True)
@@ -65,14 +64,18 @@ def main(cfg: DictConfig):
         f.write(wandb.run.id)
 
     # Logging setup
-    logger.add(os.path.join(save_dir, 'logs.log'), rotation='10 MB', backtrace=True, diagnose=True, level='DEBUG', mode="w")
+    logger.add(
+        os.path.join(save_dir, 'logs.log'), rotation='10 MB', backtrace=True,
+        diagnose=True, level='DEBUG', mode='a' if resume else 'w',
+    )
     logger.info("########################################### \n\n")
     logger.info(f"This circuit contains {cfg.wires} qubits")
     
     print("Will save models to: ", save_dir)
 
     # Preserve the exact config this run used, in one reusable file.
-    save_config(cfg, os.path.join(save_dir, 'config.yaml'))
+    if not resume:
+        save_config(cfg, os.path.join(save_dir, 'config.yaml'))
     circuit_dir = pathlib.Path(save_dir) / 'circuits'
     if not resume:
         save_circuit_snapshot(save_dir)
@@ -81,12 +84,11 @@ def main(cfg: DictConfig):
 
     # Further setup based on config
     if resume:
-        model_path = sorted(glob.glob(os.path.join(save_dir, 'checkpoints', 'ep*.pickle')))[-1]
-        init_weights = ut.Unpickle(model_path)['weights']
+        checkpoint_path, checkpoint = load_training_checkpoint(save_dir, cfg, signature)
+        init_weights = checkpoint['weights']
 
-        logger.add(os.path.join(cfg.save_dir, 'logs.log'), rotation='10 MB', backtrace=True, diagnose=True, level='DEBUG', mode="a")
         logger.info("########################################### \n\n")
-        logger.info(f"Resuming training from last checkpoint at {model_path}")
+        logger.info(f"Resuming training from last checkpoint at {checkpoint_path}")
         logger.info(f"Using arguments specified in original training run")
         logger.info(f"Training resumed at {datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}")
         logger.info("Current weights are: ", init_weights)
@@ -167,8 +169,17 @@ def main(cfg: DictConfig):
         logger=logger,
     )
 
-    # Initialize the optimizer
-    optimizer = qml.AdamOptimizer(stepsize=cfg.lr)
+    # Initialize Adam with either the configured settings or the saved settings.
+    if resume:
+        optimizer_state = checkpoint['optimizer']
+        optimizer = qml.AdamOptimizer(
+            stepsize=optimizer_state['stepsize'],
+            beta1=optimizer_state['beta1'],
+            beta2=optimizer_state['beta2'],
+            eps=optimizer_state['eps'],
+        )
+    else:
+        optimizer = qml.AdamOptimizer(stepsize=cfg.lr)
 
     # Initialize the trainer with the new class signature
     trainer = qc.QuantumTrainer(
@@ -185,6 +196,8 @@ def main(cfg: DictConfig):
         wandb=wandb,
         lr_decay=cfg.lr_decay,
         loss_type=cfg.loss,
+        checkpoint_config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+        circuit_signature=signature,
         # Pass additional parameters via kwargs
         init_weights=init_weights,
         batch_size=cfg.batch_size,
@@ -195,7 +208,7 @@ def main(cfg: DictConfig):
     trainer.set_directories(save_dir)
 
     if resume:
-        trainer.set_current_epoch(ut.get_current_epoch(model_path))
+        trainer.restore_checkpoint(checkpoint)
         logger.info(f"Resuming training from epoch {trainer.current_epoch}")
     else:
         logger.info(f"Training started at {datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}")
@@ -214,7 +227,7 @@ def main(cfg: DictConfig):
     except KeyboardInterrupt:
         print("WHYYYYY")
         print("DON'T PRESS CTRL+C AGAIN. I'M TRYING TO SAVE THE CURRENT MODEL AND WRITE TO LOG!")
-        trainer.save(save_dir, name='aborted_weights.pickle')
+        ut.Pickle({'weights': trainer.current_weights}, 'aborted_weights.pickle', path=save_dir)
         trainer.print_params('Training aborted. Current parameters are: ')
     finally:
         logger.info('Training completed with the following parameters:')

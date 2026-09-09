@@ -3,31 +3,6 @@
 This is the active development backlog for the supported JetClass VQC pipeline. Completed work
 belongs in Git history rather than this file. Status checked against the code on 2026-09-09.
 
-## P4: resume is incomplete
-
-Resume now reads the saved YAML before writing, extracts structured weights, and uses the shared
-circuit factory. It still starts a fresh optimizer, resets the training loop to epoch zero, and
-selects checkpoints lexicographically. Epoch checkpoints lack the final model's provenance.
-
-Select checkpoints by numeric epoch, verify their configuration/source provenance, and restore
-optimizer state, history, and the next epoch. Resume currently warns about the fresh optimizer.
-
-Done when a saved run can resume for another training step with its original configuration,
-weights, optimizer state, and circuit implementation.
-
-## P6: optimizer checkpoints are unusable
-
-`QuantumTrainer.save()` passes Adam's NumPy moment arrays directly to `json.dump`, which cannot
-serialize them. The initial checkpoint also tries to join a path with `opt_name=None`. Both errors
-are caught and printed, so weight checkpoints are written without usable optimizer state.
-
-Use a serialization format that preserves all optimizer fields, assign a valid filename for every
-checkpoint, and load the state in the resume path described in P4. Do not swallow serialization
-errors.
-
-Done when each weight checkpoint has matching optimizer state and a resumed step matches an
-uninterrupted run from the same state.
-
 ## P10: the loader reads and converts more data than requested
 
 `CASEJetClassDataset._load_file()` reads all rows from each HDF5 dataset before `_read_class()`

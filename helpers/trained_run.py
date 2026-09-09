@@ -81,6 +81,94 @@ def implementation_signature(circuit_dir: str | Path) -> dict[str, str]:
     }
 
 
+def latest_checkpoint(run_dir: str | Path) -> Path:
+    """Return the checkpoint with the greatest numeric epoch."""
+    checkpoint_dir = Path(run_dir) / 'checkpoints'
+    checkpoints = []
+    for path in checkpoint_dir.glob('ep*.pickle'):
+        epoch = path.stem.removeprefix('ep')
+        if epoch.isdigit():
+            checkpoints.append((int(epoch), path))
+    if not checkpoints:
+        raise FileNotFoundError(f'No epoch checkpoints found under {checkpoint_dir}.')
+    return max(checkpoints, key=lambda item: item[0])[1]
+
+
+def load_training_checkpoint(
+    run_dir: str | Path,
+    cfg: DictConfig,
+    signature: dict[str, str],
+) -> tuple[Path, dict[str, Any]]:
+    """Load and validate the latest resumable training checkpoint."""
+    path = latest_checkpoint(run_dir)
+    try:
+        with path.open('rb') as stream:
+            payload = pickle.load(stream)
+    except (EOFError, pickle.UnpicklingError) as error:
+        raise ValueError(f'Cannot read checkpoint {path}.') from error
+
+    if not isinstance(payload, dict):
+        raise ValueError(f'Checkpoint {path} does not contain a training state.')
+    training = payload.get('training')
+    optimizer = payload.get('optimizer')
+    if not isinstance(training, dict) or not isinstance(optimizer, dict) or 'weights' not in payload:
+        raise ValueError(f'Checkpoint {path} is missing weights, optimizer state, or training state.')
+
+    config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+    if training.get('config') != config:
+        raise ValueError(f'Checkpoint {path} does not match the saved configuration.')
+    if training.get('implementation') != signature:
+        raise ValueError(f'Checkpoint {path} does not match the saved circuit implementation.')
+
+    completed_epoch = training.get('completed_epoch')
+    filename_epoch = int(path.stem.removeprefix('ep'))
+    if type(completed_epoch) is not int or completed_epoch != filename_epoch:
+        raise ValueError(f'Checkpoint {path} has inconsistent epoch metadata.')
+    history = training.get('history')
+    if not isinstance(history, dict) or any(key not in history for key in ('train', 'val', 'auc')):
+        raise ValueError(f'Checkpoint {path} has incomplete training history.')
+    if any(type(training.get(key)) is not int for key in ('n_decays', 'last_decay')):
+        raise ValueError(f'Checkpoint {path} has incomplete learning-rate state.')
+    if (len(history['train']) != completed_epoch
+            or len(history['val']) != completed_epoch + 1
+            or len(history['auc']) != completed_epoch + 1):
+        raise ValueError(f'Checkpoint {path} history does not match its completed epoch.')
+    if not all(np.all(np.isfinite(history[key])) for key in ('train', 'val', 'auc')):
+        raise ValueError(f'Checkpoint {path} contains nonfinite training history.')
+
+    required_optimizer_fields = {'name', 'stepsize', 'beta1', 'beta2', 'eps', 'accumulation'}
+    if not required_optimizer_fields.issubset(optimizer):
+        raise ValueError(f'Checkpoint {path} has incomplete optimizer state.')
+    if optimizer['name'] != 'AdamOptimizer':
+        raise ValueError(f"Unsupported checkpoint optimizer: {optimizer['name']}.")
+    if not all(np.isfinite(optimizer[key]) for key in ('stepsize', 'beta1', 'beta2', 'eps')):
+        raise ValueError(f'Checkpoint {path} contains invalid optimizer settings.')
+    if (optimizer['stepsize'] <= 0 or optimizer['eps'] <= 0
+            or not 0 <= optimizer['beta1'] < 1 or not 0 <= optimizer['beta2'] < 1):
+        raise ValueError(f'Checkpoint {path} contains invalid Adam hyperparameters.')
+    accumulation = optimizer['accumulation']
+    if completed_epoch == 0:
+        if accumulation is not None:
+            raise ValueError(f'Checkpoint {path} has optimizer moments before training.')
+    elif (not isinstance(accumulation, dict)
+          or any(key not in accumulation for key in ('fm', 'sm', 't'))
+          or not isinstance(accumulation.get('fm'), (list, tuple))
+          or not isinstance(accumulation.get('sm'), (list, tuple))
+          or type(accumulation['t']) is not int
+          or accumulation['t'] < 1):
+        raise ValueError(f'Checkpoint {path} has invalid Adam accumulation state.')
+    if accumulation is not None:
+        moments = [*accumulation['fm'], *accumulation['sm']]
+        if not all(np.all(np.isfinite(moment)) for moment in moments):
+            raise ValueError(f'Checkpoint {path} contains nonfinite Adam moments.')
+
+    if completed_epoch >= cfg.epochs:
+        raise ValueError(
+            f'Checkpoint epoch {completed_epoch} already reached the configured limit of {cfg.epochs}.'
+        )
+    return path, payload
+
+
 def validate_weights(model: QuantumClassifier, weights: Any, cfg: DictConfig) -> None:
     """Reject missing, nonfinite, or incompatible structured circuit weights."""
     if not isinstance(weights, CircuitWeights):
