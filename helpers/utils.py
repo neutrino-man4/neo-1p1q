@@ -47,35 +47,30 @@ def Pickle(python_object,filename,path=None,save_path=".",verbose=True,overwrite
     '''save <python_object> to <filename> at location <save_path>'''
     if '.' not in filename: filename=filename+extension
     if path is not None: save_path=path
-    pwd=os.getcwd()
-    if save_path != "." :
-        os.chdir(save_path)
+    file_path=os.path.join(save_path,filename)
     if not overwrite:
-        if filename in os.listdir("."): 
+        if os.path.exists(file_path):
             raise IOError("File already exists!")
     if append: 
         assert type(python_object)==dict
-        prev=Unpickle(filename)
+        prev=Unpickle(file_path)
         print_events(prev,name="old")
         python_object=merge_flat_dict(prev,python_object)
         print_events(python_object,name="appended")
     if type(python_object)==nnp.ndarray:
-        nnp.save(filename,python_object)
+        nnp.save(file_path,python_object)
         suffix=".npy"
     else:
         try:
-            File=open(filename,"wb")
-            pickle.dump(python_object,File)
+            with open(file_path,"wb") as stream:
+                pickle.dump(python_object,stream)
         except OverflowError as e:
-            File.close()
-            os.system("rm "+filename)
-            os.chdir(pwd)
+            os.remove(file_path)
             print (e,"trying to save as numpy arrays in folder...")
             folder_save(python_object,filename.split(".")[0],save_path)
             return
         suffix=""
-    if verbose: print (filename+suffix, " saved at ", os.getcwd())
-    os.chdir(pwd)
+    if verbose: print (filename+suffix, " saved at ", os.path.abspath(save_path))
     return
 
 def folder_save(events,folder_name,save_path,append=False):
