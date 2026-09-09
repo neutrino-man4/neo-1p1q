@@ -243,27 +243,6 @@ class TestKnownPreExistingBugs(unittest.TestCase):
             with self.assertRaises(AttributeError):
                 trainer2.iteration(data, labels=onp.array([1]), train=True)
 
-    def test_probabilistic_loss_incompatible_with_vqc_circuit(self) -> None:
-        """probabilistic_loss expects a 2D (batch x class) circuit output; VQC's
-        circuit returns one scalar Hamiltonian expval per sample -- mismatched shape."""
-        vqc = arch.QuantumClassifier(
-            wires=4, shots=None, dev_name='default.qubit',
-            layers=1, backend_name='autograd', test=False,
-        )
-        vqc.set_circuit('normal', operations_per_qubit=3)
-        shape = vqc._impl.rotation_shape(4, 1)
-        weights = CircuitWeights(
-            rot=np.array(onp.random.uniform(0, np.pi, size=(shape.L, shape.N, shape.R))),
-            aux={k: np.array(v) for k, v in vqc._impl.aux_defaults.items()},
-        )
-        data = np.array(onp.random.uniform(-1, 1, size=(2, 4, 3)))
-        with self.assertRaises(IndexError):
-            loss.probabilistic_loss(
-                weights, inputs=data, quantum_circuit=vqc.circuit,
-                labels=onp.array([0, 1]), return_scores=True,
-            )
-
-
 @unittest.skipUnless(
     os.path.isdir(os.path.join(_JETCLASS_DIR, 'test', 'TTBar_'))
     and os.path.isdir(os.path.join(_JETCLASS_DIR, 'test', 'ZJetsToNuNu')),

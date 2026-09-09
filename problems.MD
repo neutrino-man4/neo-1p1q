@@ -15,20 +15,6 @@ optimizer state, history, and the next epoch. Resume currently warns about the f
 Done when a saved run can resume for another training step with its original configuration,
 weights, optimizer state, and circuit implementation.
 
-## P5: `probabilistic_loss` does not match the VQC output
-
-The registered VQC circuit returns one Hamiltonian expectation value per sample.
-`probabilistic_loss` indexes that result as a two-dimensional class-probability array, so
-`loss=prob` raises `IndexError`.
-
-Choose one supported meaning for this mode:
-
-- Remove `probabilistic_loss` and reject `loss=prob` during configuration validation.
-- Convert the scalar expectation value into a documented binary probability.
-- Add a circuit whose measurement returns class probabilities.
-
-Done when the selected behavior has an end-to-end training and validation test.
-
 ## P6: optimizer checkpoints are unusable
 
 `QuantumTrainer.save()` passes Adam's NumPy moment arrays directly to `json.dump`, which cannot

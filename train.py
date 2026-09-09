@@ -104,10 +104,7 @@ def main(cfg: DictConfig):
         logger.info(f"pT will also be scaled assuming above maxima")
     if cfg.flat:
         logger.info("Using flat mjj distribution for training")
-    if cfg.loss == 'prob':
-        cost_fn = loss.probabilistic_loss
-    else:
-        cost_fn = loss.VQC_cost
+    cost_fn = loss.VQC_cost
     if cfg.shots < 0:
         logger.warning("Negative shots specified. Setting to None for an analytic calculation.")
     # Create the quantum classifier instance

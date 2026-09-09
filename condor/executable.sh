@@ -38,7 +38,7 @@ $BELLE2_EXEC/xrdcp -f $HOME/qae_hep/case_reader.py $EOS_MGM_URL://eos/user/a/ari
 TRAIN_N=1000
 VALID_N=250
 
-DESC="Using arbitrary 3D rotations, calculating probs, added quantum loss based on prob. of |0> state, 2 layers with reuploading,\
+DESC="Using arbitrary 3D rotations, 2 layers with reuploading,\
  3 layers - RY/RZ + 2x CRY/CRZ , separate ancilla,\
   pt scaled to min/max values, qcd sample flattened using mjj."
 

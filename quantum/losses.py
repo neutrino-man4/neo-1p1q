@@ -2,18 +2,13 @@
 Loss functions for fidelity objectives and quantum classifiers.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-08
+Date: 2026-09-09
 """
 
 import pennylane.numpy as np
 import tqdm
 from typing import Callable, Dict
 import quantum.math_functions as mfunc
-from autograd.scipy.special import expit
-
-def sigmoid(x):
-    """Convert logits to probabilities with an elementwise stable sigmoid."""
-    return expit(x)
 
 # name -> scoring function(labels, score); add an entry here to support a new loss_type
 LOSS_FNS: Dict[str, Callable] = {
@@ -61,9 +56,8 @@ def VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=
     """Compute mean classifier loss from circuit expectations plus weights.aux['bias'].
 
     Flatten the circuit outputs and apply the loss registered under loss_type.
-    BCE consumes logits; MSE consumes raw scores. If return_scores is True,
-    return (loss, scores), with sigmoid probabilities for BCE and raw scores
-    otherwise. Unknown loss names raise ValueError. reg is unused.
+    BCE consumes logits and MSE consumes raw scores. If return_scores is True,
+    return (loss, raw scores). Unknown loss names raise ValueError. reg is unused.
     """
     bias=weights.aux['bias']
     exp_vals=np.reshape(
@@ -75,7 +69,7 @@ def VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=
         raise ValueError(f"Unknown loss_type '{loss_type}'. Registered: {list(LOSS_FNS)}")
     loss_fn=LOSS_FNS[loss_type](labels,score)
     if return_scores:
-        return loss_fn, sigmoid(score) if loss_type == 'BCE' else score
+        return loss_fn, score
     return np.array(loss_fn,requires_grad=True)
 
 def batched_VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=False,loss_type='MSE',reg=1.):
@@ -83,8 +77,8 @@ def batched_VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return
 
     Add weights.aux['bias'] to each circuit output before computing the loss.
     If return_scores is True, return arrays of individual losses and scores
-    instead of averaging. BCE scores are sigmoid probabilities; other scores
-    are raw outputs plus bias. Unknown loss names raise ValueError. reg is unused.
+    instead of averaging. Scores are raw circuit outputs plus bias. Unknown loss
+    names raise ValueError. reg is unused.
     """
     bias=weights.aux['bias']
     #k1=weights[-3]
@@ -97,31 +91,10 @@ def batched_VQC_cost(weights,inputs=None,quantum_circuit=None,labels=None,return
         exp_vals=np.array(quantum_circuit(weights,input[None,...]),requires_grad=True) # n_qubits x batch_size
         #exp_vals=np.mean(exp_vals,axis=0)
         score=exp_vals+bias
-        scores.append(sigmoid(score) if loss_type == 'BCE' else score)
+        scores.append(score)
         loss_fn.append(LOSS_FNS[loss_type](label,score))
     loss_fn=np.array(loss_fn,requires_grad=False)
     score=np.array(scores,requires_grad=False)
     if return_scores:
         return loss_fn, score
     return np.mean(loss_fn)
-
-def probabilistic_loss(weights,inputs=None,quantum_circuit=None,labels=None,return_scores=False,loss_type='BCE'):
-    """Return the mean of one minus each labeled class probability.
-
-    Expect a class-probability vector for one sample or a (batch, classes)
-    array for multiple samples, with integer class labels. Scalar VQC
-    expectation outputs are incompatible. If return_scores is True, return
-    (mean loss, individual probability deficits). loss_type is unused.
-    """
-    batch_size=len(labels)
-    probs=np.array(quantum_circuit(weights,inputs),requires_grad=True) # n_qubits x batch_size
-    
-    if batch_size==1:
-        scores=1-probs[labels[0]]
-    else:
-        scores=1-probs[np.arange(probs.shape[0]), labels]
-    loss_fn=np.mean(scores)
-        
-    if return_scores:
-        return loss_fn, scores
-    return np.array(loss_fn,requires_grad=True)

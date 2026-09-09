@@ -2,7 +2,7 @@
 Check BCE values and differentiation through circuit scores and bias.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-08
+Date: 2026-09-09
 """
 
 import unittest
@@ -54,7 +54,7 @@ class TestBCELogits(unittest.TestCase):
             value, scores = cost(params, return_scores=True)
             self.assertTrue(onp.isfinite(value))
             self.assertEqual(scores.shape, (size,))
-            self.assertTrue(onp.all((scores >= 0.0) & (scores <= 1.0)))
+            onp.testing.assert_allclose(scores, onp.cos(params[0] + inputs) + params[1])
             steps = onp.eye(2) * 1e-6
             expected = [(cost(params + step) - cost(params - step)) / 2e-6 for step in steps]
             onp.testing.assert_allclose(qml.grad(cost)(params), expected, rtol=1e-6, atol=1e-8)

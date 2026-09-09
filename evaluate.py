@@ -35,7 +35,7 @@ def main(config_path: str) -> None:
 
     logger.info(f"Loaded verified final weights from {os.path.join(save_dir, 'trained_model.pickle')}")
 
-    cost_fn = loss.probabilistic_loss if cfg.loss == 'prob' else loss.VQC_cost
+    cost_fn = loss.VQC_cost
 
     test_split = 'flat_test' if cfg.flat else 'test'
     _class_files = lambda sample: sorted(glob.glob(os.path.join(cfg.data_dir, test_split, sample, '*.h5')))

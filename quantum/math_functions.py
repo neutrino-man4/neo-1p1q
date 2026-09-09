@@ -1,8 +1,8 @@
 """
-Differentiable losses and elementwise score transformations.
+Differentiable loss functions.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-08
+Date: 2026-09-09
 """
 
 import pennylane.numpy as np
@@ -20,13 +20,3 @@ def binary_cross_entropy_with_logits(labels: np.ndarray, logits: np.ndarray) -> 
     """
     labels = np.reshape(labels, np.shape(logits))
     return np.mean(np.logaddexp(0.0, logits) - labels * logits)
-
-def transform(x,k1=1.0):
-    """Map finite scores into (0, 1) with an arctangent scaled by k1."""
-    return 0.5*(1+(2./np.pi)*np.arctan(k1*x))
-
-
-
-def double_sided_leaky_relu(x):
-    """Preserve values in [0, 1] and use slope 0.1 outside that interval."""
-    return np.where(x < 0, 0.1 * x, np.where(x > 1, 0.9+0.1*x, x))
