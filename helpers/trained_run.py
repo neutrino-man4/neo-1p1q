@@ -19,6 +19,7 @@ import numpy as np
 import pennylane.numpy as qnp
 from omegaconf import DictConfig, OmegaConf
 
+from helpers.config import validate_training_config
 from quantum.architectures import QuantumClassifier
 from quantum.circuits.base import CircuitWeights
 
@@ -223,6 +224,7 @@ def load_trained_run(config_path: str) -> tuple[DictConfig, QuantumClassifier]:
     """Load the final model beside its YAML, rejecting unverifiable run artifacts."""
     path = Path(config_path).expanduser().resolve()
     cfg = OmegaConf.load(path)
+    validate_training_config(cfg)
     config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
     model_path = path.parent / 'trained_model.pickle'
     if not model_path.is_file():

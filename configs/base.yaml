@@ -1,4 +1,5 @@
 seed: 'base'
+random_seed: 42
 
 # JetClass data and outputs
 signal: 'TTBar_'

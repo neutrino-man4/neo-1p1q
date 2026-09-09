@@ -45,16 +45,31 @@ Pass configuration changes as `key=value` arguments:
 python train.py \
   --config configs/base.yaml \
   seed=run_001 \
+  random_seed=42 \
   data_dir=/path/to/JetClass \
   save_dir=/path/to/saved_models
 ```
 
-The run is saved under `<save_dir>/<seed>/`. It contains the resolved `config.yaml`, a copy of the circuit source, epoch checkpoints, final weights, logs, history, and plots.
+The run is saved under `<save_dir>/<seed>/<random_seed>/`. It contains the resolved `config.yaml`, a copy of the circuit source, epoch checkpoints, final weights, logs, history, and plots.
+
+Launch repeated runs with consecutive random seeds and bounded parallelism:
+
+```bash
+python run_experiments.py \
+  --config configs/base.yaml \
+  --number-of-runs 10 \
+  --num-cores 4 \
+  seed=experiment_001 \
+  random_seed=42 \
+  data_dir=/path/to/JetClass
+```
+
+This launches seeds 42 through 51 and keeps at most four one-thread training processes active. The launcher options are not training configuration fields and are not stored with individual models.
 
 Resume the latest checkpoint for a run with:
 
 ```bash
-python train.py --config /path/to/saved_models/run_001/config.yaml --resume
+python train.py --config /path/to/saved_models/run_001/42/config.yaml --resume
 ```
 
 ## Evaluation
@@ -62,13 +77,15 @@ python train.py --config /path/to/saved_models/run_001/config.yaml --resume
 Evaluate the final saved model with its run configuration:
 
 ```bash
-python evaluate.py --config /path/to/saved_models/run_001/config.yaml
+python evaluate.py --config /path/to/saved_models/run_001/42/config.yaml
 ```
 
 The same run can be selected by seed:
 
 ```bash
-python evaluate.py --seed run_001 --model-dir /path/to/saved_models
+python evaluate.py --seed run_001 --random-seed 42 --model-dir /path/to/saved_models
 ```
 
-Evaluation loads the saved circuit and `trained_model.pickle`. It writes `test_results.pickle` to `<dump>/<seed>/` and `plots/roc_curve.png` to the run directory. The `dump` path comes from the saved configuration.
+Evaluation loads the saved circuit and `trained_model.pickle`. It writes `test_results.pickle` to `<dump>/<seed>/<random_seed>/` and `plots/roc_curve.png` to the run directory. The `dump` path comes from the saved configuration.
+
+The same `random_seed` reproduces weight initialization, dataset ordering, and finite-shot sampling for clean runs with the same code, data, dependencies, backend, hardware, and thread settings. Finite-shot resumption does not reproduce an uninterrupted sampling stream because device RNG state is not checkpointed.

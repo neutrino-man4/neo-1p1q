@@ -12,6 +12,7 @@ import datetime
 import glob
 import time
 import matplotlib.pyplot as plt
+import numpy as nnp
 import pennylane.numpy as np
 import pennylane as qml
 import helpers.utils as ut
@@ -19,7 +20,12 @@ import case_reader as cr
 import quantum.losses as loss
 import quantum.architectures as qc
 from quantum.circuits.base import CircuitWeights
-from helpers.config import load_config, save_config
+from helpers.config import (
+    load_config,
+    run_directory,
+    save_config,
+    validate_training_config,
+)
 from helpers.trained_run import (
     implementation_signature,
     load_circuit_snapshot,
@@ -36,19 +42,30 @@ def main(cfg: DictConfig):
     """Train with resolved run settings and certify successfully completed weights."""
     cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True))
     cfg.seed = str(cfg.seed)
-    save_dir = os.path.abspath(os.path.join(os.path.expanduser(cfg.save_dir), cfg.seed))
     resume = cfg.resume
+    random_seed = validate_training_config(cfg, require_random_seed=not resume)
+    save_dir = str(run_directory(cfg.save_dir, cfg.seed, random_seed))
     if resume:
         cfg = OmegaConf.load(os.path.join(save_dir, 'config.yaml'))
         OmegaConf.resolve(cfg)
+        random_seed = validate_training_config(cfg)
         logger.warning('Resume uses the saved configuration; other training-option overrides are ignored.')
     else:
-        if os.path.exists(os.path.join(save_dir, 'config.yaml')):
-            raise FileExistsError(f'Run already exists at {save_dir}; choose a new seed or resume it.')
         for key in ('save_dir', 'data_dir', 'dump'):
             cfg[key] = os.path.abspath(os.path.expanduser(cfg[key]))
         cfg.seed = str(cfg.seed)
-        cfg.save_dir = os.path.dirname(save_dir)
+        save_dir = str(run_directory(cfg.save_dir, cfg.seed, random_seed))
+        legacy_config = run_directory(cfg.save_dir, cfg.seed) / 'config.yaml'
+        if legacy_config.exists():
+            raise FileExistsError(
+                f'Legacy run already uses experiment directory {legacy_config.parent}.'
+            )
+        try:
+            pathlib.Path(save_dir).mkdir(parents=True, exist_ok=False)
+        except FileExistsError as error:
+            raise FileExistsError(
+                f'Run already exists at {save_dir}; choose a new seed or resume it.'
+            ) from error
     # Set up directories
     plot_dir = os.path.join(save_dir, 'plots')
     pathlib.Path(plot_dir).mkdir(parents=True, exist_ok=True)
@@ -58,6 +75,8 @@ def main(cfg: DictConfig):
         run_str = f"{os.getlogin()}_{cfg.seed}"
     except:
         run_str = f"abal_{cfg.seed}"
+    if random_seed is not None:
+        run_str = f"{run_str}_{random_seed}"
     
     wandb.init(project="1P1Q", config=OmegaConf.to_container(cfg), name=run_str, notes=cfg.desc)
     with open(os.path.join(save_dir, "wandb_run_id.txt"), "w") as f:
@@ -114,7 +133,11 @@ def main(cfg: DictConfig):
 
     if not resume:
         shape = VQC._impl.rotation_shape(len(VQC.auto_wires), cfg.num_layers)
-        rot = np.array(np.random.uniform(0, np.pi, size=(shape.L, shape.N, shape.R)), requires_grad=True)
+        rng = nnp.random.default_rng(random_seed)
+        rot = np.array(
+            rng.uniform(0, np.pi, size=(shape.L, shape.N, shape.R)),
+            requires_grad=True,
+        )
         aux = {**VQC._impl.aux_defaults, **dict(cfg.get('aux_weights', {}))}
         aux = {k: np.array(v, requires_grad=True) for k, v in aux.items()}
         init_weights = CircuitWeights(rot=rot, aux=aux)
@@ -158,6 +181,7 @@ def main(cfg: DictConfig):
         train=True,
         normalize_pt=cfg.norm_pt,
         logger=logger,
+        seed=random_seed if random_seed is not None else 0,
     )
     val_loader = cr.OneP1QDataLoader(
         signal_filelist=val_sig, background_filelist=val_bg,
@@ -167,6 +191,7 @@ def main(cfg: DictConfig):
         train=False,
         normalize_pt=cfg.norm_pt,
         logger=logger,
+        seed=random_seed if random_seed is not None else 0,
     )
 
     # Initialize Adam with either the configured settings or the saved settings.
@@ -216,7 +241,8 @@ def main(cfg: DictConfig):
         logger.info(f'Additional information: {cfg.desc}')
 
     if cfg.get('evictable', False):
-        trainer.is_evictable_job(seed=cfg.seed)
+        evictable_id = cfg.seed if random_seed is None else f'{cfg.seed}/{random_seed}'
+        trainer.is_evictable_job(seed=evictable_id)
 
     # Begin training
     abs_start = time.time()
@@ -229,6 +255,7 @@ def main(cfg: DictConfig):
         print("DON'T PRESS CTRL+C AGAIN. I'M TRYING TO SAVE THE CURRENT MODEL AND WRITE TO LOG!")
         ut.Pickle({'weights': trainer.current_weights}, 'aborted_weights.pickle', path=save_dir)
         trainer.print_params('Training aborted. Current parameters are: ')
+        raise
     finally:
         logger.info('Training completed with the following parameters:')
         trainer.print_params('Trained parameters:')

@@ -133,6 +133,19 @@ class TestSavedRun(unittest.TestCase):
             _, model = load_trained_run(str(moved / 'config.yaml'))
         np.testing.assert_array_equal(model.current_weights.rot, self.weights.rot)
 
+    def test_legacy_unseeded_run_remains_loadable(self) -> None:
+        del self.cfg.random_seed
+        save_config(self.cfg, str(self.config_path))
+        model_path = self.root / 'trained_model.pickle'
+        payload = pickle.loads(model_path.read_bytes())
+        del payload['training']['config']['random_seed']
+        model_path.write_bytes(pickle.dumps(payload))
+
+        with self.assertWarns(RuntimeWarning):
+            cfg, model = load_trained_run(str(self.config_path))
+        self.assertNotIn('random_seed', cfg)
+        np.testing.assert_array_equal(model.current_weights.rot, self.weights.rot)
+
     def test_missing_circuit_setting_is_rejected(self) -> None:
         del self.cfg.operations_per_qubit
         with self.assertRaisesRegex(ValueError, 'Missing circuit settings: operations_per_qubit'):
@@ -166,6 +179,8 @@ class TestSavedRun(unittest.TestCase):
     def test_resume_reads_saved_settings_before_writing_yaml(self) -> None:
         import train
 
+        del self.cfg.random_seed
+        save_config(self.cfg, str(self.config_path))
         incoming = OmegaConf.merge(self.cfg, {
             'save_dir': str(self.root.parent), 'seed': self.root.name,
             'resume': True, 'wires': 99, 'new_option': {'value': 99},
@@ -231,12 +246,12 @@ class TestSavedRun(unittest.TestCase):
         wandb.run.id = 'offline-test'
         figure, axes = MagicMock(), MagicMock()
         with patch.object(train, 'wandb', wandb), patch.object(train, 'logger'), \
-                patch.object(train.cr, 'OneP1QDataLoader', return_value=batches), \
+                patch.object(train.cr, 'OneP1QDataLoader', return_value=batches) as loader, \
                 patch.object(train.glob, 'glob', return_value=['unused.h5']), \
                 patch.object(QuantumClassifier, 'print_training_params'), \
                 patch.object(train.plt, 'subplots', return_value=(figure, axes)):
             train.main(cfg)
-            saved = self.root / 'entrypoint' / 'config.yaml'
+            saved = self.root / 'entrypoint' / '42' / 'config.yaml'
             reloaded = OmegaConf.load(saved)
             self.assertEqual(reloaded.batch_size, 2)
             self.assertEqual(reloaded.new_option.value, 11)
@@ -244,10 +259,28 @@ class TestSavedRun(unittest.TestCase):
             self.assertNotIn('${', saved.read_text())
             with self.assertWarns(RuntimeWarning):
                 evaluate.main(str(saved))
-        with (self.root / 'results' / 'entrypoint' / 'test_results.pickle').open('rb') as stream:
+        self.assertEqual(loader.call_count, 3)
+        self.assertTrue(all(call.kwargs['seed'] == 42 for call in loader.call_args_list))
+        with (self.root / 'results' / 'entrypoint' / '42' / 'test_results.pickle').open('rb') as stream:
             results = pickle.load(stream)
         self.assertEqual(len(results['scores']), 3)
         self.assertTrue(np.isfinite(results['auc']))
+
+    def test_new_training_requires_seed_and_claims_its_directory(self) -> None:
+        import train
+
+        cfg = OmegaConf.merge(self.cfg, {
+            'save_dir': str(self.root), 'seed': 'new', 'random_seed': 7,
+        })
+        destination = self.root / 'new' / '7'
+        destination.mkdir(parents=True)
+        with self.assertRaisesRegex(FileExistsError, str(destination)):
+            train.main(cfg)
+
+        del cfg.random_seed
+        cfg.seed = 'unseeded'
+        with self.assertRaisesRegex(ValueError, 'require an integer random_seed'):
+            train.main(cfg)
 
 
 class TestEvaluationCLI(unittest.TestCase):
@@ -257,6 +290,12 @@ class TestEvaluationCLI(unittest.TestCase):
         self.assertEqual(evaluation_config_path(['--config', '/tmp/run/config.yaml']), '/tmp/run/config.yaml')
         self.assertEqual(evaluation_config_path(['--seed', 'run', '--model-dir', '/tmp/models']),
                          '/tmp/models/run/config.yaml')
+        self.assertEqual(
+            evaluation_config_path([
+                '--seed', 'run', '--random-seed', '42', '--model-dir', '/tmp/models'
+            ]),
+            '/tmp/models/run/42/config.yaml',
+        )
         expected = Path(os.path.abspath(OmegaConf.load(DEFAULT_CONFIG).save_dir)) / 'run/config.yaml'
         self.assertEqual(evaluation_config_path(['--seed', 'run']), str(expected))
 
@@ -264,6 +303,8 @@ class TestEvaluationCLI(unittest.TestCase):
         for args in ([], ['--seed', 'run', 'wires=8'],
                      ['--seed', 'run', '--config', '/tmp/config.yaml'],
                      ['--config', '/tmp/config.yaml', '--model-dir', '/tmp'],
+                     ['--config', '/tmp/config.yaml', '--random-seed', '42'],
+                     ['--seed', 'run', '--random-seed', '-1'],
                      ['--seed', '../run']):
             with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 evaluation_config_path(args)

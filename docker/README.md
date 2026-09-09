@@ -18,7 +18,7 @@ docker run --rm \
   -v /absolute/path/to/JetClass:/workspace/data/JetClass:ro \
   -v "$PWD/saved_models:/workspace/saved_models" \
   -v "$PWD/results:/workspace/results" \
-  1p1q python train.py seed=run_001
+  1p1q python train.py seed=run_001 random_seed=42
 ```
 
 Weights & Biases runs offline by default. For online logging, pass `WANDB_MODE=online` and `WANDB_API_KEY` with `docker run -e`.
@@ -33,6 +33,7 @@ docker run --rm \
   -v "$PWD/results:/workspace/results" \
   1p1q python evaluate.py \
     --seed run_001 \
+    --random-seed 42 \
     --model-dir /workspace/saved_models
 ```
 

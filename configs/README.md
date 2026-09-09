@@ -10,6 +10,7 @@ The project uses OmegaConf to read YAML and apply command line overrides. YAML p
 python train.py \
   --config configs/base.yaml \
   seed=run_001 \
+  random_seed=42 \
   data_dir=/path/to/JetClass \
   save_dir=/path/to/saved_models \
   epochs=40 \
@@ -40,15 +41,31 @@ Avoid spaces around `=`. Quote an entire override when its value contains spaces
 
 | Entry | Purpose |
 | --- | --- |
-| `seed` | Names the run directory. Training converts it to a string and saves the run under `<save_dir>/<seed>/`. Use a new value for each run. |
+| `seed` | Names the experiment directory under `save_dir`. |
+| `random_seed` | Integer controlling weight initialization, data ordering, and finite-shot sampling. Artifacts are saved under `<save_dir>/<seed>/<random_seed>/`. |
 | `data_dir` | Root of the JetClass dataset. Relative paths are resolved when training starts. |
-| `save_dir` | Parent directory for saved runs. Each seed gets its own subdirectory. |
-| `dump` | Parent directory for evaluation results. Evaluation writes to `<dump>/<seed>/`. |
+| `save_dir` | Parent directory for saved experiments and their random-seed runs. |
+| `dump` | Parent directory for evaluation results. Evaluation writes to `<dump>/<seed>/<random_seed>/`. |
 | `desc` | Short run description passed to Weights & Biases. |
 | `save` | Enables checkpoints, history, and final model output. Keep this `true` for resumption or evaluation. |
 | `resume` | Requests resumption from the latest checkpoint. Prefer the `--resume` flag described below. |
 
 The default paths are relative to the directory where the command is run. Override them when the data or model storage is elsewhere.
+
+## Repeated runs
+
+`run_experiments.py` launches fresh runs with consecutive random seeds:
+
+```bash
+python run_experiments.py \
+  --config configs/base.yaml \
+  --number-of-runs 10 \
+  --num-cores 4 \
+  seed=experiment_001 \
+  random_seed=42
+```
+
+`--number-of-runs` and `--num-cores` default to 1. They belong to the launcher, not the YAML, and are not saved with a model. Each subprocess uses one computational thread, so `--num-cores 4` permits at most four simultaneous training processes. The launcher does not resume runs; resume an individual saved configuration with `train.py --resume`.
 
 ## Data entries
 
@@ -106,7 +123,7 @@ These entries define the circuit and weight shapes. Changing them when evaluatin
 For a new run, training merges the selected YAML with every command line override, resolves the paths, and writes the result to:
 
 ```text
-<save_dir>/<seed>/config.yaml
+<save_dir>/<seed>/<random_seed>/config.yaml
 ```
 
 The run directory also contains the circuit source used for that run, checkpoints, and `trained_model.pickle`. The saved YAML is part of the model record. Do not replace it with the current `configs/base.yaml` after the run has started.
@@ -114,7 +131,7 @@ The run directory also contains the circuit source used for that run, checkpoint
 Resume from the saved settings and latest checkpoint with:
 
 ```bash
-python train.py --config /path/to/saved_models/run_001/config.yaml --resume
+python train.py --config /path/to/saved_models/run_001/42/config.yaml --resume
 ```
 
 Resumption reloads the original saved configuration. Training option overrides supplied with `--resume` do not replace the recorded settings.
@@ -122,13 +139,15 @@ Resumption reloads the original saved configuration. Training option overrides s
 Evaluation accepts a saved run configuration directly:
 
 ```bash
-python evaluate.py --config /path/to/saved_models/run_001/config.yaml
+python evaluate.py --config /path/to/saved_models/run_001/42/config.yaml
 ```
 
 It can also reconstruct that path from the run seed and model directory:
 
 ```bash
-python evaluate.py --seed run_001 --model-dir /path/to/saved_models
+python evaluate.py --seed run_001 --random-seed 42 --model-dir /path/to/saved_models
 ```
 
 Evaluation verifies the saved configuration, circuit files, and final weights before running inference. It does not use an epoch checkpoint as a substitute for `trained_model.pickle`.
+
+Saved runs created before `random_seed` was introduced retain the historical `<save_dir>/<seed>/` layout and can still be resumed or evaluated without adding the new field to their configurations.

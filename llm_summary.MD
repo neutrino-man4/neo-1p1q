@@ -1,6 +1,6 @@
 # Repository guide for future agents
 
-This document describes the repository as it exists on 2026-09-09. Read `AGENTS.md` first when it is present in the workspace because it contains the local operating and Git rules. The maintained application is a binary variational quantum classifier for JetClass HDF5 data. The supported entry points are `train.py` and `evaluate.py`.
+This document describes the repository as it exists on 2026-09-09. Read `AGENTS.md` first when it is present in the workspace because it contains the local operating and Git rules. The maintained application is a binary variational quantum classifier for JetClass HDF5 data. The supported entry points are `train.py`, `run_experiments.py`, and `evaluate.py`.
 
 ## Current scope
 
@@ -11,6 +11,7 @@ The active path supports one dataset format and one circuit family:
 - PennyLane Autograd with Adam optimization.
 - MSE or binary cross entropy with logits.
 - Training, epoch checkpoints, resumption, final model certification, and evaluation.
+- Reproducible random-seed runs and bounded parallel launch of repeated training.
 
 There is no active QAE, VPC, AOJ, probabilistic-output, or private Delphes workflow. Some tracked research utilities still refer to those older workflows; they are listed under [Peripheral and legacy files](#peripheral-and-legacy-files).
 
@@ -29,7 +30,7 @@ Training initializes Weights & Biases even when no online account is wanted. Set
 
 ```bash
 WANDB_MODE=offline conda run -n pennylane-gpu-sep2026 \
-  python train.py seed=run_001 data_dir=/path/to/JetClass
+  python train.py seed=run_001 random_seed=42 data_dir=/path/to/JetClass
 ```
 
 Inspect the merged configuration without starting training:
@@ -43,6 +44,7 @@ conda run -n pennylane-gpu-sep2026 python train.py --print-config
 | File | Responsibility |
 | --- | --- |
 | `train.py` | Training entry point. Resolves configuration, creates the run, snapshots the circuit, builds loaders and the model, trains, checkpoints, and writes final artifacts. |
+| `run_experiments.py` | Repeated-run launcher. Freezes one resolved input configuration and starts consecutive random-seed runs with bounded process parallelism. |
 | `evaluate.py` | Evaluation entry point. Loads a certified run, recreates its saved circuit, scores the test split, calculates ROC AUC, and writes results. |
 | `configs/base.yaml` | Single default configuration for the JetClass VQC. |
 | `configs/README.md` | Detailed description of configuration fields and command line overrides. |
@@ -65,7 +67,7 @@ The repository uses namespace packages and has no tracked `__init__.py` files un
 ```mermaid
 flowchart TD
     A[configs/base.yaml and key=value overrides] --> B[train.py]
-    B --> C[Resolve config and create save_dir/seed]
+    B --> C[Resolve config and create save_dir/seed/random_seed]
     C --> D[Save config.yaml and circuit snapshot]
     D --> E[Build QuantumClassifier and JetClass loaders]
     E --> F[QuantumTrainer epoch loop]
@@ -106,7 +108,7 @@ Each HDF5 file must contain:
 6. Concatenates signal and background and shuffles them with NumPy RNG seed 0 unless a different loader seed is passed directly.
 7. Materializes the selected data in memory and yields internal batches through a PyTorch `DataLoader` with `batch_size=None`.
 
-Training does not pass the run's `seed` into the loader. The config seed names the run directory; it does not currently seed model initialization or dataset shuffling.
+The config `seed` names an experiment and does not control randomness. `random_seed` controls model initialization, each split's deterministic loader permutation, and PennyLane finite-shot sampling. The maintained loader uses an explicit local NumPy generator and does not rely on the global NumPy RNG.
 
 With `norm_pt=false`, fixed assumed ranges are mapped to the circuit ranges:
 
@@ -126,20 +128,30 @@ Training and validation use the configured `batch_size`. Evaluation omits that a
 Examples:
 
 ```bash
-python train.py seed=run_002 epochs=40 flat=true
+python train.py seed=run_002 random_seed=42 epochs=40 flat=true
 python train.py aux_weights.bias=0.0 num_particles=12
 python train.py --config /path/to/another.yaml seed=run_003
 ```
 
 OmegaConf accepts new entries as well as overrides. Every resolved entry is written to the run's `config.yaml`, including new keys and interpolated values. A new run converts `save_dir`, `data_dir`, and `dump` to absolute paths before saving.
 
-The authoritative field reference is `configs/README.md`. The settings that define the circuit are `wires`, `num_layers`, `shots`, `device_name`, `backend`, `circuit_type`, `operations_per_qubit`, and `aux_weights`.
+The authoritative field reference is `configs/README.md`. The settings that define the circuit are `wires`, `num_layers`, `shots`, `device_name`, `backend`, `circuit_type`, `operations_per_qubit`, and `aux_weights`. `random_seed` is part of each training run. `--number-of-runs` and `--num-cores` belong only to `run_experiments.py` and are never saved in a model configuration.
+
+Launch repeated runs with:
+
+```bash
+python run_experiments.py --config configs/base.yaml \
+  --number-of-runs 10 --num-cores 4 \
+  seed=experiment_001 random_seed=42
+```
+
+This generates random seeds 42 through 51 and keeps at most four one-thread training subprocesses active. The launcher rejects resume mode, freezes the resolved input in a temporary YAML for the duration of the launch, and stops scheduling new work after a child failure.
 
 Evaluation has a separate parser. It accepts exactly one source:
 
 ```bash
-python evaluate.py --config /models/run_001/config.yaml
-python evaluate.py --seed run_001 --model-dir /models
+python evaluate.py --config /models/run_001/42/config.yaml
+python evaluate.py --seed run_001 --random-seed 42 --model-dir /models
 ```
 
 It rejects training overrides and ambiguous sources. When `--model-dir` is omitted, it uses `save_dir` from the current base config.
@@ -178,14 +190,14 @@ The default `operations_per_qubit` is 3 and matches the RZ, RY, and RX parameter
 
 `train.py` performs these steps for a new run:
 
-1. Fully resolves the incoming OmegaConf config and converts `seed` to a string.
-2. Selects `<save_dir>/<seed>` as the run directory. An existing `config.yaml` causes a `FileExistsError` to prevent accidental overwrite.
+1. Fully resolves the incoming OmegaConf config, converts `seed` to a string, and validates the integer `random_seed`.
+2. Selects `<save_dir>/<seed>/<random_seed>` as the run directory and claims it atomically to prevent accidental overwrite.
 3. Creates the run and plot directories, initializes Weights & Biases, and starts Loguru file logging.
 4. Saves the exact resolved config to `config.yaml`.
 5. Copies `base.py`, `registry.py`, and `vqc.py` into the run's `circuits/` directory.
 6. Imports that saved registry and calculates SHA-256 hashes for the saved circuit files.
 7. Builds the classifier from the saved circuit implementation.
-8. Initializes the rotation tensor uniformly on `[0, pi)` and initializes named auxiliary weights from the circuit defaults plus config overrides.
+8. Initializes the rotation tensor uniformly on `[0, pi)` with a local generator seeded by `random_seed`, then initializes named auxiliary weights from the circuit defaults plus config overrides.
 9. Finds the configured JetClass signal and background files for training and validation.
 10. Builds balanced loaders and an Adam optimizer.
 11. Creates `QuantumTrainer`, passing it the resolved config and circuit hashes for checkpoints.
@@ -198,7 +210,7 @@ Losses are averaged by sample count, so a smaller final batch receives the corre
 
 After epoch 4, early stopping uses recent validation AUC. With `lr_decay=false`, insufficient improvement stops training. With `lr_decay=true`, the Adam step size is halved, up to the configured `patience`, before stopping.
 
-A keyboard interrupt writes `aborted_weights.pickle` and enters the normal cleanup block. It does not create a certified `trained_model.pickle`.
+A keyboard interrupt during the training loop writes `aborted_weights.pickle`, enters the normal cleanup block, and then exits unsuccessfully. It does not create a certified `trained_model.pickle`.
 
 The optional `evictable=true` override activates legacy EOS checkpoint copying and expects `EOS_MGM_URL`, `CERN_USERNAME`, and `BELLE2_EXEC`. This option is absent from the base config and is outside the maintained local workflow.
 
@@ -207,7 +219,7 @@ The optional `evictable=true` override activates legacy EOS checkpoint copying a
 A saved run has this structure:
 
 ```text
-<save_dir>/<seed>/
+<save_dir>/<seed>/<random_seed>/
 ├── config.yaml
 ├── circuits/
 │   ├── base.py
@@ -250,10 +262,10 @@ Pickles are Python-specific and can execute code when loaded. Treat saved run fi
 Resume with the saved config:
 
 ```bash
-python train.py --config /models/run_001/config.yaml --resume
+python train.py --config /models/run_001/42/config.yaml --resume
 ```
 
-The incoming `save_dir` and `seed` first locate the run. `train.py` then reloads the run's existing `config.yaml`; other training overrides are discarded. It imports the saved circuit, selects the checkpoint with the greatest numeric epoch, and verifies:
+The incoming `save_dir`, `seed`, and `random_seed` first locate the run. `train.py` then reloads the run's existing `config.yaml`; other training overrides are discarded. Legacy configurations without `random_seed` retain the historical `<save_dir>/<seed>/` lookup. Training imports the saved circuit, selects the checkpoint with the greatest numeric epoch, and verifies:
 
 - Exact config equality.
 - Exact saved-circuit hashes.
@@ -276,13 +288,13 @@ The trainer restores weights, Adam accumulation, history, learning-rate decay st
 6. Recreates the classifier and checks rotation shape, auxiliary weight names and shapes, and finite values.
 7. Installs non-trainable copies of the saved weights on the model.
 
-The loader then reads the saved test split and class counts. Inference produces one loss, raw score, and label per jet. Evaluation computes ROC AUC and writes:
+The loader then reads the saved test split and class counts using the saved random seed. Inference produces one loss, raw score, and label per jet. Evaluation computes ROC AUC and writes:
 
-- `<dump>/<seed>/test_results.pickle`, containing `costs`, `scores`, `labels`, and `auc`.
-- `<save_dir>/<seed>/plots/roc_curve.png`.
-- `<save_dir>/<seed>/eval.log`.
+- `<dump>/<seed>/<random_seed>/test_results.pickle`, containing `costs`, `scores`, `labels`, and `auc`.
+- `<save_dir>/<seed>/<random_seed>/plots/roc_curve.png`.
+- `<save_dir>/<seed>/<random_seed>/eval.log`.
 
-Loading emits a `RuntimeWarning` because completed epochs and early stopping do not establish convergence. Inspect validation loss and AUC history before treating a model as converged. Finite-shot execution is stochastic even with identical code and weights.
+Loading emits a `RuntimeWarning` because completed epochs and early stopping do not establish convergence. Inspect validation loss and AUC history before treating a model as converged. Clean runs with the same random seed reproduce initialization, data order, and finite-shot sampling when code, data, dependencies, backend, hardware, and thread settings match. Finite-shot resumption does not reproduce an uninterrupted sampling stream because device RNG state is not checkpointed.
 
 The snapshot boundary covers `base.py`, `registry.py`, and `vqc.py`. Data preprocessing, loss code, `QuantumClassifier`, and the Python environment are loaded from the current checkout. Changes to those components can affect evaluation of an old run even when the circuit snapshot is unchanged.
 
@@ -295,7 +307,7 @@ MPLCONFIGDIR=/tmp/matplotlib conda run -n pennylane-gpu-sep2026 \
   python -m unittest discover -s tests -q
 ```
 
-The suite contained 44 passing tests at the last verification on 2026-09-09. JetClass integration tests are guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist.
+The suite contained 58 passing tests at the last verification on 2026-09-09. JetClass integration tests are guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist.
 
 | Test file | Coverage |
 | --- | --- |
@@ -303,9 +315,10 @@ The suite contained 44 passing tests at the last verification on 2026-09-09. Jet
 | `test_circuit_base.py` | Rotation shape bounds, Hamiltonian coefficient length, and circuit registry errors. |
 | `test_circuit_parity.py` | VQC wiring parity and a fixed golden expectation value. |
 | `test_circuit_weights_checkpoint.py` | Pickle round trip for structured rotation and auxiliary weights. |
-| `test_config.py` | Typed and nested OmegaConf overrides, resume flag, config printing, explicit config paths, and byte-stable save/load. |
-| `test_end_to_end.py` | Training, sample-weighted partial batches, inference cardinality, checkpoints, Adam resumption, and optional real JetClass loading. |
-| `test_saved_run.py` | Saved circuit imports, config and hash mismatch rejection, final weight validation, movable run directories, checkpoint provenance, CLI restrictions, and mocked training-to-evaluation flow. |
+| `test_config.py` | Typed and nested OmegaConf overrides, random-seed validation, run paths, resume flag, config printing, and byte-stable save/load. |
+| `test_end_to_end.py` | Training, finite-shot reproducibility, sample-weighted partial batches, inference cardinality, checkpoints, Adam resumption, and optional real JetClass loading. |
+| `test_run_experiments.py` | Launcher configuration ownership, consecutive seeds, concurrency limits, failure handling, interruption, and child thread limits. |
+| `test_saved_run.py` | Saved circuit imports, legacy compatibility, nested paths, config and hash mismatch rejection, final weight validation, checkpoint provenance, CLI restrictions, and mocked training-to-evaluation flow. |
 
 Warnings about CUDA initialization or Autograd with NumPy 2 may appear in the local environment without failing tests. Investigate new warnings separately from these known dependency warnings.
 

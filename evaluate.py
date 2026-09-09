@@ -1,6 +1,6 @@
 """
 Evaluate final trained weights using only their saved run configuration.
-Locate config.yaml with --config PATH or --seed RUN [--model-dir DIRECTORY].
+Locate config.yaml with --config PATH or --seed RUN [--random-seed INTEGER].
 Author: Aritra Bal (ETP)
 Date: 2026-09-09
 """
@@ -17,7 +17,7 @@ from sklearn.metrics import roc_curve, roc_auc_score
 import case_reader as cr
 import helpers.utils as ut
 import quantum.losses as loss
-from helpers.config import evaluation_config_path
+from helpers.config import evaluation_config_path, run_directory
 from helpers.trained_run import load_trained_run
 
 
@@ -25,8 +25,9 @@ def main(config_path: str) -> None:
     """Verify a saved run, evaluate its final weights, and report test ROC/AUC."""
     config_path = str(pathlib.Path(config_path).expanduser().resolve())
     cfg, VQC = load_trained_run(config_path)
+    random_seed = cfg.get('random_seed')
     save_dir = os.path.dirname(config_path)
-    dump_dir = os.path.join(cfg.dump, cfg.seed)
+    dump_dir = str(run_directory(cfg.dump, cfg.seed, random_seed))
     plot_dir = os.path.join(save_dir, 'plots')
     pathlib.Path(dump_dir).mkdir(parents=True, exist_ok=True)
     pathlib.Path(plot_dir).mkdir(parents=True, exist_ok=True)
@@ -62,6 +63,7 @@ def main(config_path: str) -> None:
         train=False,
         normalize_pt=cfg.norm_pt,
         logger=logger,
+        seed=random_seed if random_seed is not None else 0,
     )
 
     costs, scores, labels = VQC.run_inference(test_loader, loss_fn=cost_fn, loss_type=cfg.loss)

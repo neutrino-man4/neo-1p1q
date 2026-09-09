@@ -41,6 +41,7 @@ class QuantumClassifier:
         use_ancilla: Whether to use an ancilla qubit
         backend_name: Backend for the QNode (e.g., 'autograd', 'torch', 'jax')
         test: If True, sets the circuit immediately for testing
+        random_seed: Seed for finite-shot sampling
     """
     
     def __init__(
@@ -52,6 +53,7 @@ class QuantumClassifier:
         use_ancilla: bool = False,
         backend_name: str = 'autograd',
         test: bool = False,
+        random_seed: Optional[int] = None,
         **kwargs: Any
     ) -> None:
         # Circuit configuration
@@ -65,7 +67,9 @@ class QuantumClassifier:
         self._initialize_wires()
         
         # Set up device
-        self.device = self._set_device(shots=shots, device_name=dev_name)
+        self.device = self._set_device(
+            shots=shots, device_name=dev_name, random_seed=random_seed
+        )
         
         # Circuit and weights
         self._impl: Optional[Circuit] = None
@@ -112,6 +116,7 @@ class QuantumClassifier:
             dev_name=cfg.device_name,
             layers=cfg.num_layers,
             backend_name=cfg.backend,
+            random_seed=cfg.get('random_seed'),
             test=False,
         )
         model.set_circuit(
@@ -121,18 +126,27 @@ class QuantumClassifier:
         )
         return model
     
-    def _set_device(self, shots: Optional[int], device_name: str) -> "qml.devices.Device":
+    def _set_device(
+        self,
+        shots: Optional[int],
+        device_name: str,
+        random_seed: Optional[int],
+    ) -> "qml.devices.Device":
         """
         Set up the quantum device for simulation/execution.
         
         Args:
             shots: Number of shots for each measurement, or None for analytic execution
             device_name: Name of the quantum device
+            random_seed: Seed for finite-shot sampling, or None for legacy behavior
             
         Returns:
             Initialized PennyLane device
         """
-        device = qml.device(device_name, wires=len(self.all_wires), shots=shots)
+        device_options = {} if random_seed is None else {'seed': random_seed}
+        device = qml.device(
+            device_name, wires=len(self.all_wires), shots=shots, **device_options
+        )
         print(f"Device initialized: {device}")
         return device
     

@@ -6,6 +6,10 @@ Author: Aritra Bal (ETP)
 Date: 2026-09-09
 """
 import os
+from pathlib import Path
+import pickle
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -76,6 +80,116 @@ def _build_trainer(save_dir: str, batch_size: int, epochs: int, n_qubits: int = 
     )
     trainer.set_directories(save_dir)
     return vqc, trainer
+
+
+def _run_seeded_training(random_seed: int):
+    """Run one finite-shot epoch and inference from an isolated random stream."""
+    vqc = arch.QuantumClassifier(
+        wires=2,
+        shots=50,
+        dev_name='lightning.qubit',
+        layers=1,
+        backend_name='autograd',
+        random_seed=random_seed,
+    )
+    vqc.set_circuit('normal', operations_per_qubit=3)
+    shape = vqc._impl.rotation_shape(2, 1)
+    initial = onp.random.default_rng(random_seed).uniform(
+        0, onp.pi, size=(shape.L, shape.N, shape.R)
+    )
+    weights = CircuitWeights(
+        rot=np.array(initial, requires_grad=True),
+        aux={
+            name: np.array(value, requires_grad=True)
+            for name, value in vqc._impl.aux_defaults.items()
+        },
+    )
+    trainer = arch.QuantumTrainer(
+        model=vqc,
+        lr=0.05,
+        optimizer=qml.AdamOptimizer(stepsize=0.05),
+        loss_fn=loss.VQC_cost,
+        save=False,
+        epochs=1,
+        wandb=None,
+        loss_type='MSE',
+        init_weights=weights,
+        batch_size=2,
+        logger=__import__('loguru').logger,
+    )
+    data = np.array([
+        [[0.1, 0.2, 0.3], [0.2, -0.1, 0.4]],
+        [[-0.2, 0.3, 0.5], [0.4, 0.1, 0.2]],
+    ])
+    labels = np.array([0, 1])
+    batches = _FixedBatches([data], [labels])
+    with tempfile.TemporaryDirectory() as directory:
+        trainer.set_directories(directory)
+        history = trainer.run_training_loop(batches, batches)
+        vqc.current_weights = trainer.current_weights
+        _, scores, _ = vqc.run_inference(
+            batches, loss_fn=loss.VQC_cost, loss_type='MSE'
+        )
+        return initial, trainer.current_weights, history, scores
+
+
+class TestRandomSeedReproducibility(unittest.TestCase):
+    """One seed must reproduce the complete finite-shot numerical path."""
+
+    def test_same_seed_reproduces_training_and_inference(self) -> None:
+        first = _run_seeded_training(42)
+        second = _run_seeded_training(42)
+
+        onp.testing.assert_array_equal(first[0], second[0])
+        onp.testing.assert_array_equal(first[1].rot, second[1].rot)
+        for name in first[1].aux:
+            onp.testing.assert_array_equal(first[1].aux[name], second[1].aux[name])
+        self.assertEqual(first[2], second[2])
+        onp.testing.assert_array_equal(first[3], second[3])
+
+    def test_different_seed_changes_initialization(self) -> None:
+        first = _run_seeded_training(42)
+        second = _run_seeded_training(43)
+        self.assertFalse(onp.array_equal(first[0], second[0]))
+
+    def test_parallel_fresh_processes_reproduce_numerical_results(self) -> None:
+        code = (
+            "import pickle, sys; from pathlib import Path; import numpy as np; "
+            "from tests.test_end_to_end import _run_seeded_training; "
+            "initial, weights, history, scores = _run_seeded_training(42); "
+            "payload = (np.asarray(initial), np.asarray(weights.rot), "
+            "{k: np.asarray(v) for k, v in weights.aux.items()}, history, "
+            "np.asarray(scores)); Path(sys.argv[1]).write_bytes(pickle.dumps(payload))"
+        )
+        environment = os.environ.copy()
+        environment.update({
+            'OMP_NUM_THREADS': '1',
+            'MKL_NUM_THREADS': '1',
+            'OPENBLAS_NUM_THREADS': '1',
+            'MPLCONFIGDIR': '/tmp/matplotlib',
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / f'result_{index}.pickle' for index in range(2)]
+            processes = [
+                subprocess.Popen(
+                    [sys.executable, '-c', code, str(path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    env=environment,
+                )
+                for path in paths
+            ]
+            for process in processes:
+                _, stderr = process.communicate(timeout=60)
+                self.assertEqual(process.returncode, 0, stderr.decode())
+            first, second = [pickle.loads(path.read_bytes()) for path in paths]
+
+        onp.testing.assert_array_equal(first[0], second[0])
+        onp.testing.assert_array_equal(first[1], second[1])
+        for name in first[2]:
+            onp.testing.assert_array_equal(first[2][name], second[2][name])
+        self.assertEqual(first[3], second[3])
+        onp.testing.assert_array_equal(first[4], second[4])
 
 
 class TestFullTrainingLoop(unittest.TestCase):

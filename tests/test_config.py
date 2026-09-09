@@ -7,6 +7,7 @@ Author: Aritra Bal (ETP)
 Date: 2026-09-09
 """
 import os
+from pathlib import Path
 import sys
 import tempfile
 import unittest
@@ -14,7 +15,13 @@ from unittest import mock
 
 from omegaconf import OmegaConf
 
-from helpers.config import DEFAULT_CONFIG, load_config, save_config
+from helpers.config import (
+    DEFAULT_CONFIG,
+    load_config,
+    run_directory,
+    save_config,
+    validate_training_config,
+)
 
 _BASE = DEFAULT_CONFIG
 
@@ -30,6 +37,7 @@ class TestLoadConfig(unittest.TestCase):
         cfg = self._run([])
         base = OmegaConf.load(_BASE)
         self.assertEqual(cfg, base)
+        self.assertEqual(cfg.random_seed, 42)
 
     def test_typed_and_nested_overrides(self):
         cfg = self._run(['epochs=7', 'save=false', 'aux_weights.scale_factor=2.5', 'n_signal=40'])
@@ -57,6 +65,30 @@ class TestLoadConfig(unittest.TestCase):
                 cfg = load_config()
             self.assertEqual(cfg.wires, 9)
             self.assertEqual(cfg.seed, 'y')
+
+    def test_random_seed_validation_and_run_paths(self):
+        cfg = self._run(['random_seed=17'])
+        self.assertEqual(validate_training_config(cfg, require_random_seed=True), 17)
+        self.assertEqual(run_directory('/tmp/models', 'run', 17),
+                         Path('/tmp/models/run/17'))
+        self.assertEqual(run_directory('/tmp/models', 'run'),
+                         Path('/tmp/models/run'))
+
+        cfg.random_seed = 2**64
+        self.assertEqual(validate_training_config(cfg), 2**64)
+
+        for value in (-1, 1.5, 'invalid', True):
+            with self.subTest(value=value):
+                cfg.random_seed = value
+                with self.assertRaisesRegex(ValueError, 'random_seed must be an integer'):
+                    validate_training_config(cfg)
+
+    def test_launcher_options_are_rejected_in_training_config(self):
+        for key in ('number_of_runs', 'num_cores'):
+            with self.subTest(key=key):
+                cfg = self._run([f'{key}=2'])
+                with self.assertRaisesRegex(ValueError, 'launcher options'):
+                    validate_training_config(cfg)
 
 
 class TestSaveConfigRoundTrip(unittest.TestCase):
