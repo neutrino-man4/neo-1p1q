@@ -8,7 +8,6 @@ Date: 2026-09-09
 from omegaconf import DictConfig, OmegaConf
 import os
 import pathlib
-import subprocess
 import datetime
 import glob
 import time
@@ -21,7 +20,13 @@ import quantum.losses as loss
 import quantum.architectures as qc
 from quantum.circuits.base import CircuitWeights
 from helpers.config import load_config, save_config
-from helpers.trained_run import implementation_signature, save_trained_run, validate_weights
+from helpers.trained_run import (
+    implementation_signature,
+    load_circuit_snapshot,
+    save_circuit_snapshot,
+    save_trained_run,
+    validate_weights,
+)
 from loguru import logger
 import wandb
 
@@ -45,9 +50,7 @@ def main(cfg: DictConfig):
     cfg.resume = resume
     cfg.seed = str(cfg.seed)
     cfg.save_dir = os.path.dirname(save_dir)
-    signature = implementation_signature()
     # Set up directories
-    base_dir: str = cfg.base_dir
     plot_dir = os.path.join(save_dir, 'plots')
     pathlib.Path(plot_dir).mkdir(parents=True, exist_ok=True)
 
@@ -70,6 +73,11 @@ def main(cfg: DictConfig):
 
     # Preserve the exact config this run used, in one reusable file.
     save_config(cfg, os.path.join(save_dir, 'config.yaml'))
+    circuit_dir = pathlib.Path(save_dir) / 'circuits'
+    if not resume:
+        save_circuit_snapshot(save_dir)
+    circuit_registry = load_circuit_snapshot(save_dir)
+    signature = implementation_signature(circuit_dir)
 
     # Further setup based on config
     if resume:
@@ -87,17 +95,6 @@ def main(cfg: DictConfig):
         logger.info("########################################### \n\n")
         logger.info(f"This circuit contains {cfg.wires} qubits")
         logger.info("\n\n ########################################### \n\n")
-        tmpfile = os.path.join(save_dir, 'FROZEN_ARCHITECTURE.py')
-        subprocess.run(['cp', os.path.join(base_dir, 'quantum/architectures.py'), tmpfile])
-        tmpfile = os.path.join(save_dir, 'FROZEN_DATAREADER.py')
-        subprocess.run(['cp', os.path.join(base_dir, 'case_reader.py'), tmpfile])
-        tmpfile = os.path.join(save_dir, 'FROZEN_LOSS.py')
-        subprocess.run(['cp', os.path.join(base_dir, 'quantum/losses.py'), tmpfile])
-        # delete checkpoint directory contents
-        try:
-            subprocess.run(['rm', '-r', os.path.join(save_dir, 'checkpoints')])
-        except:
-            pass
         
     logger.info(f"Feature are scaled to the following limits: {ut.feature_limits}")
 
@@ -114,7 +111,7 @@ def main(cfg: DictConfig):
     if cfg.shots < 0:
         logger.warning("Negative shots specified. Setting to None for an analytic calculation.")
     # Create the quantum classifier instance
-    VQC = qc.QuantumClassifier.from_config(cfg)
+    VQC = qc.QuantumClassifier.from_config(cfg, circuit_registry=circuit_registry)
 
     if not resume:
         shape = VQC._impl.rotation_shape(len(VQC.auto_wires), cfg.num_layers)

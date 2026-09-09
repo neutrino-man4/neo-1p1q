@@ -2,7 +2,7 @@
 VQC circuit: the variational classifier ansatz migrated from
 QuantumClassifier._vqc_circuit into the Circuit protocol.
 Author: Aritra Bal (ETP)
-2026-09-05
+Date: 2026-09-09
 """
 from typing import List, Union
 
@@ -10,7 +10,7 @@ import pennylane as qml
 import pennylane.numpy as np
 
 from helpers.utils import getIndex
-from quantum.circuits.base import CircuitBase, CircuitWeights
+from .base import CircuitBase, CircuitWeights
 
 
 def sigmoid(x: Union[float, np.ndarray]) -> Union[float, np.ndarray]:

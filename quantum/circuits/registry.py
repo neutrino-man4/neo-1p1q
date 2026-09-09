@@ -2,10 +2,10 @@
 Circuit registry: maps a circuit_type string to its Circuit implementation.
 Replaces the if/else string switch in QuantumClassifier.set_circuit().
 Author: Aritra Bal (ETP)
-2026-09-05
+Date: 2026-09-09
 """
-from quantum.circuits.base import Circuit
-from quantum.circuits.vqc import VQCCircuit
+from .base import Circuit
+from .vqc import VQCCircuit
 
 _REGISTRY = {'normal': VQCCircuit}
 

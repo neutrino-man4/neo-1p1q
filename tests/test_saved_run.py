@@ -19,7 +19,14 @@ from omegaconf import OmegaConf
 import pennylane.numpy as qnp
 
 from helpers.config import DEFAULT_CONFIG, evaluation_config_path, load_config, save_config
-from helpers.trained_run import implementation_signature, load_trained_run, save_trained_run
+from helpers.trained_run import (
+    CIRCUIT_FILES,
+    implementation_signature,
+    load_circuit_snapshot,
+    load_trained_run,
+    save_circuit_snapshot,
+    save_trained_run,
+)
 from quantum.architectures import QuantumClassifier
 from quantum.circuits.base import CircuitWeights
 from quantum.losses import VQC_cost
@@ -38,7 +45,9 @@ class TestSavedRun(unittest.TestCase):
             'save_dir': str(self.root), 'dump': str(self.root / 'results'),
             'aux_weights': {'bias': 0.25}, 'new_option': {'value': 7},
         })
-        self.model = QuantumClassifier.from_config(self.cfg)
+        self.circuit_dir = save_circuit_snapshot(str(self.root))
+        self.registry = load_circuit_snapshot(self.root)
+        self.model = QuantumClassifier.from_config(self.cfg, circuit_registry=self.registry)
         self.weights = CircuitWeights(
             rot=qnp.array(np.arange(16).reshape(2, 2, 4) / 20),
             aux={name: qnp.array(value) for name, value in self.cfg.aux_weights.items()},
@@ -47,7 +56,7 @@ class TestSavedRun(unittest.TestCase):
         save_config(self.cfg, str(self.config_path))
         self.history = {'train': [0.5], 'val': [0.6, 0.4], 'auc': [0.5, 0.7]}
         save_trained_run(str(self.root), self.cfg, self.model, self.weights,
-                         self.history, implementation_signature())
+                         self.history, implementation_signature(self.circuit_dir))
 
     def test_round_trip_preserves_nondefault_circuit_and_scores(self) -> None:
         with self.assertWarnsRegex(RuntimeWarning, 'does not establish convergence'):
@@ -100,6 +109,7 @@ class TestSavedRun(unittest.TestCase):
         moved.mkdir()
         for name in ('config.yaml', 'trained_model.pickle'):
             (self.root / name).rename(moved / name)
+        self.circuit_dir.rename(moved / 'circuits')
         with self.assertWarns(RuntimeWarning):
             _, model = load_trained_run(str(moved / 'config.yaml'))
         np.testing.assert_array_equal(model.current_weights.rot, self.weights.rot)
@@ -114,7 +124,25 @@ class TestSavedRun(unittest.TestCase):
                         {'train': [np.nan], 'val': [0.5, 0.4], 'auc': [0.5, 0.6]}):
             with self.subTest(history=history), self.assertRaisesRegex(ValueError, 'incomplete training history'):
                 save_trained_run(str(self.root), self.cfg, self.model, self.weights,
-                                 history, implementation_signature())
+                                 history, implementation_signature(self.circuit_dir))
+
+    def test_saved_registry_is_used_instead_of_global_registry(self) -> None:
+        with patch('quantum.architectures.registry.get', side_effect=AssertionError('global registry used')):
+            with self.assertWarns(RuntimeWarning):
+                _, model = load_trained_run(str(self.config_path))
+        self.assertTrue(model._impl.__class__.__module__.startswith('_saved_circuits_'))
+
+    def test_missing_saved_circuit_file_is_rejected(self) -> None:
+        for name in CIRCUIT_FILES:
+            with self.subTest(name=name):
+                path = self.circuit_dir / name
+                contents = path.read_bytes()
+                path.unlink()
+                try:
+                    with self.assertRaisesRegex(FileNotFoundError, name):
+                        load_trained_run(str(self.config_path))
+                finally:
+                    path.write_bytes(contents)
 
     def test_resume_reads_saved_settings_before_writing_yaml(self) -> None:
         import train
@@ -155,7 +183,6 @@ class TestSavedRun(unittest.TestCase):
         with patch.object(train, 'wandb', wandb), patch.object(train, 'logger'), \
                 patch.object(train.cr, 'OneP1QDataLoader', return_value=batches), \
                 patch.object(train.glob, 'glob', return_value=['unused.h5']), \
-                patch.object(train.subprocess, 'run'), \
                 patch.object(QuantumClassifier, 'print_training_params'), \
                 patch.object(train.plt, 'subplots', return_value=(figure, axes)):
             train.main(cfg)

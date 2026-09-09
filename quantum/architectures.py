@@ -2,7 +2,7 @@
 Configure quantum classifiers and manage training, inference, and checkpoints.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-08
+Date: 2026-09-09
 """
 
 # pylint: disable=maybe-no-member
@@ -99,7 +99,7 @@ class QuantumClassifier:
         self.two_comb_wires = list(combinations(range(self.n_qubits), 2))
 
     @classmethod
-    def from_config(cls, cfg: Any) -> "QuantumClassifier":
+    def from_config(cls, cfg: Any, circuit_registry: Any = registry) -> "QuantumClassifier":
         """Build the same classifier from explicit training or saved run settings."""
         required = ('wires', 'shots', 'device_name', 'num_layers', 'backend',
                     'circuit_type', 'operations_per_qubit')
@@ -114,7 +114,11 @@ class QuantumClassifier:
             backend_name=cfg.backend,
             test=False,
         )
-        model.set_circuit(cfg.circuit_type, operations_per_qubit=cfg.operations_per_qubit)
+        model.set_circuit(
+            cfg.circuit_type,
+            operations_per_qubit=cfg.operations_per_qubit,
+            circuit_registry=circuit_registry,
+        )
         return model
     
     def _set_device(self, shots: Optional[int], device_name: str) -> "qml.devices.Device":
@@ -153,7 +157,12 @@ class QuantumClassifier:
         print("LETS GOOOOOOOOOOOOO")
         time.sleep(1)
     
-    def set_circuit(self, circuit_type: str = 'normal', operations_per_qubit: Optional[int] = None) -> None:
+    def set_circuit(
+        self,
+        circuit_type: str = 'normal',
+        operations_per_qubit: Optional[int] = None,
+        circuit_registry: Any = registry,
+    ) -> None:
         """
         Configure the QNode circuit from the circuit registry.
 
@@ -161,8 +170,9 @@ class QuantumClassifier:
             circuit_type: registered circuit name (see quantum.circuits.registry).
             operations_per_qubit: overrides the circuit's default rotation ops
                 per qubit per layer (R in its RotationShape), if given.
+            circuit_registry: registry module used to resolve circuit_type.
         """
-        self._impl = registry.get(circuit_type, self.num_layers)
+        self._impl = circuit_registry.get(circuit_type, self.num_layers)
         if operations_per_qubit is not None:
             self._impl.operations_per_qubit = operations_per_qubit
         qnode = qml.QNode(

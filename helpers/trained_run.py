@@ -6,10 +6,13 @@ Date: 2026-09-09
 """
 
 import hashlib
-from importlib.metadata import distributions
+import importlib.util
 from pathlib import Path
 import pickle
+import shutil
+import sys
 from typing import Any
+from types import ModuleType
 import warnings
 
 import numpy as np
@@ -19,21 +22,62 @@ from omegaconf import DictConfig, OmegaConf
 from quantum.architectures import QuantumClassifier
 from quantum.circuits.base import CircuitWeights
 
+CIRCUIT_FILES = ('base.py', 'registry.py', 'vqc.py')
 
-def implementation_signature() -> dict[str, Any]:
-    """Fingerprint local model/data code and the numerical library versions."""
-    root = Path(__file__).resolve().parents[1]
-    paths = sorted((root / 'quantum').rglob('*.py'))
-    paths += [root / 'helpers/utils.py', root / 'case_reader.py']
-    packages = {}
-    for distribution in distributions():
-        name = distribution.metadata['Name'].lower().replace('_', '-')
-        if name.startswith('pennylane') or name in ('numpy', 'autograd', 'scipy'):
-            packages[name] = distribution.version
+
+def save_circuit_snapshot(run_dir: str) -> Path:
+    """Copy the circuit package used by training into the run directory."""
+    from quantum.circuits import base
+
+    source_dir = Path(base.__file__).resolve().parent
+    circuit_dir = Path(run_dir) / 'circuits'
+    circuit_dir.mkdir(parents=True, exist_ok=False)
+    for name in CIRCUIT_FILES:
+        shutil.copy2(source_dir / name, circuit_dir / name)
+    return circuit_dir
+
+
+def _circuit_dir(run_dir: str | Path) -> Path:
+    """Return a complete saved circuit directory or raise with missing files."""
+    circuit_dir = Path(run_dir) / 'circuits'
+    missing = [name for name in CIRCUIT_FILES if not (circuit_dir / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Missing saved circuit files under {circuit_dir}: {', '.join(missing)}"
+        )
+    return circuit_dir
+
+
+def load_circuit_snapshot(run_dir: str | Path) -> ModuleType:
+    """Import a run's saved circuit registry independently of the global package."""
+    circuit_dir = _circuit_dir(run_dir)
+    digest = hashlib.sha256(
+        b''.join((circuit_dir / name).read_bytes() for name in CIRCUIT_FILES)
+    ).hexdigest()[:16]
+    package_name = f'_saved_circuits_{digest}'
+    registry_name = f'{package_name}.registry'
+    if registry_name in sys.modules:
+        return sys.modules[registry_name]
+
+    package = ModuleType(package_name)
+    package.__path__ = [str(circuit_dir)]
+    package.__package__ = package_name
+    sys.modules[package_name] = package
+    spec = importlib.util.spec_from_file_location(registry_name, circuit_dir / 'registry.py')
+    if spec is None or spec.loader is None:
+        raise ImportError(f'Cannot load saved circuit registry from {circuit_dir}')
+    saved_registry = importlib.util.module_from_spec(spec)
+    sys.modules[registry_name] = saved_registry
+    spec.loader.exec_module(saved_registry)
+    return saved_registry
+
+
+def implementation_signature(circuit_dir: str | Path) -> dict[str, str]:
+    """Fingerprint the three circuit files saved with a training run."""
+    directory = _circuit_dir(Path(circuit_dir).parent)
     return {
-        'sources': {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-                    for path in paths},
-        'packages': packages,
+        name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+        for name in CIRCUIT_FILES
     }
 
 
@@ -64,8 +108,8 @@ def save_trained_run(
     if (epochs < 1 or len(history['val']) != epochs + 1 or len(history['auc']) != epochs + 1
             or not all(np.all(np.isfinite(history[key])) for key in ('train', 'val', 'auc'))):
         raise ValueError('Cannot certify final weights: incomplete training history or nonfinite metrics.')
-    if implementation_signature() != signature:
-        raise ValueError('Model implementation changed during training; final weights cannot be verified.')
+    if implementation_signature(Path(run_dir) / 'circuits') != signature:
+        raise ValueError('Saved circuit implementation changed during training.')
     validate_weights(model, weights, cfg)
     config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
     saved_config = OmegaConf.to_container(OmegaConf.load(Path(run_dir) / 'config.yaml'), resolve=True)
@@ -102,9 +146,11 @@ def load_trained_run(config_path: str) -> tuple[DictConfig, QuantumClassifier]:
         raise ValueError('Missing completed-training provenance; cannot verify these final weights.')
     if training.get('config') != config:
         raise ValueError('Saved YAML does not match the configuration recorded with the trained weights.')
-    if training.get('implementation') != implementation_signature():
-        raise ValueError('Circuit/data source or numerical library versions differ from training.')
-    model = QuantumClassifier.from_config(cfg)
+    circuit_dir = _circuit_dir(path.parent)
+    if training.get('implementation') != implementation_signature(circuit_dir):
+        raise ValueError('Saved circuit files differ from those used for training.')
+    saved_registry = load_circuit_snapshot(path.parent)
+    model = QuantumClassifier.from_config(cfg, circuit_registry=saved_registry)
     weights = payload.get('weights')
     validate_weights(model, weights, cfg)
     model.current_weights = CircuitWeights(

@@ -83,11 +83,12 @@ Useful overrides include:
   `lightning.gpu` when the corresponding plugin is installed.
 
 Every run writes its resolved configuration, including overrides and newly added options, to
-`<save_dir>/<seed>/config.yaml`. Use a new seed for each run. A successful run with `save=true`
-records the configuration, source fingerprints, numerical-library versions, and completed epoch
-count alongside the final weights. Resume reads the saved settings before saving its effective
-configuration; other training-option overrides are ignored, and optimizer restoration remains
-unimplemented.
+`<save_dir>/<seed>/config.yaml`. At startup it copies `base.py`, `registry.py`, and `vqc.py` from
+the active `quantum/circuits` package to `<save_dir>/<seed>/circuits/`. Training and evaluation use
+that saved circuit implementation. A successful run with `save=true` records the configuration,
+circuit-file fingerprints, completed epoch count, and final weights in `trained_model.pickle`.
+Resume reads the saved settings and circuit before continuing; other training-option overrides
+are ignored, and optimizer restoration remains unimplemented.
 
 ## Evaluation
 
@@ -109,11 +110,11 @@ or circuit overrides. It loads `trained_model.pickle` beside the YAML, so a run 
 be moved without redirecting weight loading to its original location. Results go to
 `<dump>/<seed>/test_results.pickle` and the ROC curve goes to the run's `plots/roc_curve.png`.
 
-Missing final weights, missing provenance in older checkpoints, changed configuration or source
-code/library versions, and incompatible or nonfinite weights cause evaluation to stop. Epoch
-checkpoints are not used as substitutes. Completion and early stopping do not prove convergence;
-evaluation warns that the validation history must be inspected. Finite-shot scores remain
-stochastic even when the circuit and parameters match.
+Missing final weights, missing saved circuit files, changed configuration or saved circuit files,
+and incompatible or nonfinite weights cause evaluation to stop. Epoch checkpoints are not used
+as substitutes. Completion and early stopping do not prove convergence; evaluation warns that the
+validation history must be inspected. Finite-shot scores remain stochastic even when the circuit
+and parameters match.
 
 ## Tests
 

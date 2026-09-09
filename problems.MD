@@ -55,28 +55,6 @@ bypass the redundant `DataLoader(batch_size=None)` wrapper.
 Done when a partial read touches only the requested HDF5 rows and iteration returns the same
 values and labels without the Torch conversion chain.
 
-## P12: source snapshots can come from another checkout
-
-`train.py` copies incomplete frozen files from `cfg.base_dir`, which can point to a different
-checkout. Preserve the circuit implementation with the run instead. When a new run begins, copy
-the following files from the running checkout into `<save_dir>/<seed>/quantum/circuits/`:
-
-- `base.py`, which defines the layer loop and circuit build order.
-- `registry.py`, which maps `circuit_type` to its implementation.
-- `vqc.py`, which defines encoding, entanglement, rotations, and measurement.
-
-This plain source snapshot must capture the files as they exist on disk, including uncommitted
-changes. Keep the resolved `config.yaml` and trained weights beside it; no wheel, dependency lock,
-container, or separate manifest is required.
-
-`evaluate.py` must resolve the run directory from its saved YAML or from `seed` plus the default
-model directory, then import these saved circuit modules instead of `quantum.circuits` from the
-current checkout. It must exit if any saved circuit file, the YAML, or the trained weights are
-missing. Keep the existing weight-name, shape, and finite-value validation.
-
-Done when evaluation of a saved run still uses its saved circuit after the checkout's `vqc.py`,
-`registry.py`, or `base.py` is modified, and a test verifies this with a nondefault circuit config.
-
 ## P13: installation metadata is incomplete
 
 `train.py` imports OmegaConf and WandB, but neither package is listed in `requirements.txt`.
