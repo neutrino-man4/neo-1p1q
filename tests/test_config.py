@@ -96,6 +96,14 @@ class TestLoadConfig(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'launcher options'):
                     validate_training_config(cfg)
 
+    def test_backend_is_validated(self):
+        cfg = self._run(['backend=jax'])
+        validate_training_config(cfg)  # 'jax' is accepted, does not raise
+
+        cfg = self._run(['backend=torch'])
+        with self.assertRaisesRegex(ValueError, "backend='torch' is not supported"):
+            validate_training_config(cfg)
+
     def test_stopping_settings_are_validated(self):
         invalid = {
             'min_epochs': 0,
