@@ -67,6 +67,38 @@ def from_jax_pytree(pytree: Dict[str, Any]) -> CircuitWeights:
     return CircuitWeights(rot=rot, aux=aux)
 
 
+def _make_jax_train_step(
+    circuit: qml.QNode, optimizer: Any, loss_type: str, quantum_loss: Callable
+) -> Callable:
+    """Build one jax.jit-compiled Adam step, closing over the fixed (non-traced)
+    circuit/optimizer/loss_type. jax.jit retraces on argument shape change --
+    data/labels have at most two distinct shapes per run (a regular batch and a
+    smaller final partial batch), so this compiles at most twice per run, not
+    once per epoch.
+    """
+    import jax
+    import optax
+
+    def cost_fn(params: Dict[str, Any], data: Any, labels: Any) -> Any:
+        weights = CircuitWeights(
+            rot=params['rot'],
+            aux={key: value for key, value in params.items() if key != 'rot'},
+        )
+        return quantum_loss(
+            weights, inputs=data, labels=labels,
+            quantum_circuit=circuit, loss_type=loss_type,
+        )
+
+    @jax.jit
+    def train_step(params, opt_state, data, labels):
+        cost, grads = jax.value_and_grad(cost_fn)(params, data, labels)
+        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+        return new_params, new_opt_state, cost
+
+    return train_step
+
+
 class QuantumClassifier:
     """
     A Quantum Classifier that uses quantum circuits for classification tasks.
@@ -457,12 +489,19 @@ class QuantumTrainer:
         # validation, checkpointing, and final certification, all backend-agnostic);
         # jax_params/jax_opt_state are the differentiable/optax-native mirror used
         # only inside iteration()'s training step. restore_checkpoint() re-derives
-        # both from a restored current_weights on resume.
+        # both from a restored current_weights on resume. _jax_train_step is jitted
+        # once here (not per-call) so jax.jit's compilation cache actually applies --
+        # a freshly redefined closure every call would defeat it, since jit's cache
+        # key includes function identity, not just argument shapes.
         self.jax_params: Optional[Dict[str, Any]] = None
         self.jax_opt_state: Optional[Any] = None
+        self._jax_train_step: Optional[Callable] = None
         if self.backend == 'jax' and self.current_weights is not None:
             self.jax_params = to_jax_pytree(self.current_weights)
             self.jax_opt_state = self.optim.init(self.jax_params)
+            self._jax_train_step = _make_jax_train_step(
+                self.circuit, self.optim, self.loss_type, self.quantum_loss
+            )
         
         # Directories (to be set later)
         self.save_dir: Optional[str] = None
@@ -490,22 +529,9 @@ class QuantumTrainer:
             Training loss (if train=True) or tuple of (validation loss, scores)
         """
         if train and self.backend == 'jax':
-            import jax
-            import optax
-
-            def cost_fn(params: Dict[str, Any]) -> np.ndarray:
-                weights = CircuitWeights(
-                    rot=params['rot'],
-                    aux={key: value for key, value in params.items() if key != 'rot'},
-                )
-                return self.quantum_loss(
-                    weights, inputs=data, labels=labels,
-                    quantum_circuit=self.circuit, loss_type=self.loss_type,
-                )
-
-            cost, grads = jax.value_and_grad(cost_fn)(self.jax_params)
-            updates, self.jax_opt_state = self.optim.update(grads, self.jax_opt_state, self.jax_params)
-            self.jax_params = optax.apply_updates(self.jax_params, updates)
+            self.jax_params, self.jax_opt_state, cost = self._jax_train_step(
+                self.jax_params, self.jax_opt_state, data, labels
+            )
             # self.current_weights must stay in sync on every call: validation,
             # save_checkpoint(), and train.py's final save_trained_run() all read
             # it directly and have no reason to know a jax branch exists.
@@ -594,10 +620,22 @@ class QuantumTrainer:
                 if improvement < self.improv:
                     if self.n_decays < self.decay_patience:
                         self.n_decays += 1
-                        self.optim.stepsize *= self.decay_rate
+                        if self.backend == 'jax':
+                            # optax.inject_hyperparams keeps the learning rate as a
+                            # mutable opt_state field, so decay is a plain field
+                            # replace -- no optimizer reconstruction, no recompile.
+                            hyperparams = self.jax_opt_state.hyperparams
+                            new_lr = hyperparams['learning_rate'] * self.decay_rate
+                            self.jax_opt_state = self.jax_opt_state._replace(
+                                hyperparams={**hyperparams, 'learning_rate': new_lr}
+                            )
+                            current_stepsize = float(new_lr)
+                        else:
+                            self.optim.stepsize *= self.decay_rate
+                            current_stepsize = self.optim.stepsize
                         self.logger.info(
                             f'No improvement observed over last 3 epochs. \n'
-                            f'Learning rate decayed to {self.optim.stepsize} at epoch {n_epoch}'
+                            f'Learning rate decayed to {current_stepsize} at epoch {n_epoch}'
                         )
                     else:
                         self.logger.info(
@@ -748,6 +786,26 @@ class QuantumTrainer:
             print(prefix)
         print('autograd weights:', self.current_weights, '\n')
     
+    def _optimizer_checkpoint_payload(self) -> Dict[str, Any]:
+        """Build the backend-appropriate 'optimizer' checkpoint block."""
+        if self.backend == 'jax':
+            import jax
+            import numpy as onp
+            return {
+                'name': 'optax_adam',
+                # Leaves converted to plain NumPy: JAX array pickling is
+                # device/backend-dependent and not the documented portable path.
+                'opt_state': jax.tree_util.tree_map(onp.asarray, self.jax_opt_state),
+            }
+        return {
+            'name': type(self.optim).__name__,
+            'stepsize': self.optim.stepsize,
+            'beta1': self.optim.beta1,
+            'beta2': self.optim.beta2,
+            'eps': self.optim.eps,
+            'accumulation': self.optim.accumulation,
+        }
+
     def save_checkpoint(self) -> pathlib.Path:
         """Atomically save all state needed to resume after the current epoch."""
         if self.checkpoint_dir is None:
@@ -756,14 +814,7 @@ class QuantumTrainer:
             raise RuntimeError('Checkpoint provenance has not been configured.')
         payload = {
             'weights': self.current_weights,
-            'optimizer': {
-                'name': type(self.optim).__name__,
-                'stepsize': self.optim.stepsize,
-                'beta1': self.optim.beta1,
-                'beta2': self.optim.beta2,
-                'eps': self.optim.eps,
-                'accumulation': self.optim.accumulation,
-            },
+            'optimizer': self._optimizer_checkpoint_payload(),
             'training': {
                 'config': self.checkpoint_config,
                 'implementation': self.circuit_signature,
@@ -778,17 +829,27 @@ class QuantumTrainer:
             pickle.dump(payload, stream)
         temporary.replace(path)
         return path
-    
+
     def restore_checkpoint(self, payload: Dict[str, Any]) -> None:
-        """Restore weights, Adam accumulation, history, and the next epoch."""
+        """Restore weights, optimizer state, history, and the next epoch."""
         optimizer = payload['optimizer']
         training = payload['training']
         self.current_weights = payload['weights']
-        self.optim.stepsize = optimizer['stepsize']
-        self.optim.beta1 = optimizer['beta1']
-        self.optim.beta2 = optimizer['beta2']
-        self.optim.eps = optimizer['eps']
-        self.optim.accumulation = optimizer['accumulation']
+        if self.backend == 'jax':
+            import jax
+            import jax.numpy as jnp
+            self.jax_opt_state = jax.tree_util.tree_map(jnp.asarray, optimizer['opt_state'])
+            # jax_params must be re-derived from the just-restored current_weights,
+            # not left at whatever __init__ initialized it to -- otherwise a
+            # resumed run would restore the optimizer's momentum/step-count
+            # correctly but keep training from the wrong (stale/initial) weights.
+            self.jax_params = to_jax_pytree(self.current_weights)
+        else:
+            self.optim.stepsize = optimizer['stepsize']
+            self.optim.beta1 = optimizer['beta1']
+            self.optim.beta2 = optimizer['beta2']
+            self.optim.eps = optimizer['eps']
+            self.optim.accumulation = optimizer['accumulation']
         self.history = training['history']
         self.n_decays = training.get('n_decays', 0)
         self.current_epoch = training['completed_epoch'] + 1
