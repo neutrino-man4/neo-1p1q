@@ -167,7 +167,10 @@ python publish_reports.py --models-dir saved_models --results-dir results \
 
 The publisher copies the frontend in `report_site/`, writes one JSON document per experiment,
 and replaces the experiment index last. Published data includes aggregate and individual
-validation AUC and ROC curves but excludes raw event scores, labels, and local filesystem paths.
+validation AUC and ROC curves, and per-run classifier score distributions (a 30-bin
+signal/background density histogram, shown per seed only -- there is no aggregate view), but
+excludes raw event scores, labels, and local filesystem paths. The frontend (`report_site/assets/`)
+uses a dark theme by default (`color-scheme: dark`, no light/dark toggle).
 
 ## Circuit and score construction
 
