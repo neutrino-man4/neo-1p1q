@@ -126,6 +126,9 @@ class QuantumClassifier:
             cfg.circuit_type,
             operations_per_qubit=cfg.operations_per_qubit,
             circuit_registry=circuit_registry,
+            # 'best' (PennyLane's own QNode default) reproduces the historical
+            # behaviour for configs saved before diff_method was configurable.
+            diff_method=cfg.get('diff_method', 'best'),
         )
         return model
     
@@ -179,6 +182,7 @@ class QuantumClassifier:
         circuit_type: str = 'normal',
         operations_per_qubit: Optional[int] = None,
         circuit_registry: Any = registry,
+        diff_method: str = 'backprop',
     ) -> None:
         """
         Configure the QNode circuit from the circuit registry.
@@ -188,16 +192,30 @@ class QuantumClassifier:
             operations_per_qubit: overrides the circuit's default rotation ops
                 per qubit per layer (R in its RotationShape), if given.
             circuit_registry: registry module used to resolve circuit_type.
+            diff_method: PennyLane QNode differentiation method (e.g. 'backprop',
+                'parameter-shift', 'adjoint'). Not every method works with every
+                device or shot count -- see the raised error for guidance.
         """
         self._impl = circuit_registry.get(circuit_type, self.num_layers)
         if operations_per_qubit is not None:
             self._impl.operations_per_qubit = operations_per_qubit
-        qnode = qml.QNode(
-            lambda weights, inputs: self._impl.build(weights, inputs, self.auto_wires),
-            self.device,
-            interface=self.backend,
-            diff_method='parameter-shift',
-        )
+        try:
+            qnode = qml.QNode(
+                lambda weights, inputs: self._impl.build(weights, inputs, self.auto_wires),
+                self.device,
+                interface=self.backend,
+                diff_method=diff_method,
+            )
+        except qml.exceptions.QuantumFunctionError as error:
+            raise ValueError(
+                f"diff_method='{diff_method}' is not compatible with device {self.device}: {error}\n"
+                "Suggestion: 'parameter-shift' works on any device and any shot count, "
+                "including finite shots and Hamiltonian-coefficient training (slower per "
+                "step). 'backprop' is fast but only works with an analytic (shots=None), "
+                "backprop-capable simulator such as default.qubit. 'adjoint' is fast on "
+                "statevector simulators like lightning.qubit but cannot differentiate "
+                "Hamiltonian/observable coefficients such as aux_weights.hamiltonian_coeffs."
+            ) from error
         # Expand before differentiation so finite-shot parameter-shift supports
         # broadcast inputs whose encoded angles also contain trainable values.
         self.circuit = qml.transforms.broadcast_expand(qnode)
