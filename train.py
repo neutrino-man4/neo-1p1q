@@ -30,6 +30,7 @@ from helpers.trained_run import (
     implementation_signature,
     load_circuit_snapshot,
     load_training_checkpoint,
+    resolve_aux_weights,
     save_circuit_snapshot,
     save_trained_run,
     validate_weights,
@@ -147,7 +148,7 @@ def main(cfg: DictConfig):
             rng.uniform(0, np.pi, size=(shape.L, shape.N, shape.R)),
             requires_grad=True,
         )
-        aux = {**VQC._impl.aux_defaults, **dict(cfg.get('aux_weights', {}))}
+        aux = resolve_aux_weights(VQC, dict(cfg.get('aux_weights', {})))
         aux = {k: np.array(v, requires_grad=True) for k, v in aux.items()}
         init_weights = CircuitWeights(rot=rot, aux=aux)
     validate_weights(VQC, init_weights, cfg)

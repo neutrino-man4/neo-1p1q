@@ -170,6 +170,18 @@ def load_training_checkpoint(
     return path, payload
 
 
+def resolve_aux_weights(model: QuantumClassifier, aux_overrides: dict | None = None) -> dict:
+    """Merge a circuit's aux defaults with overrides, broadcasting any
+    circuit-declared per-wire names (see Circuit.aux_per_wire_names) from one
+    scalar to one independent value per wire.
+    """
+    merged = {**model._impl.aux_defaults, **(aux_overrides or {})}
+    n_wires = len(model.auto_wires)
+    for name in model._impl.aux_per_wire_names:
+        merged[name] = [merged[name]] * n_wires
+    return merged
+
+
 def validate_weights(model: QuantumClassifier, weights: Any, cfg: DictConfig) -> None:
     """Reject missing, nonfinite, or incompatible structured circuit weights."""
     if not isinstance(weights, CircuitWeights):
@@ -178,7 +190,7 @@ def validate_weights(model: QuantumClassifier, weights: Any, cfg: DictConfig) ->
     expected_shape = (shape.L, shape.N, shape.R)
     if np.shape(weights.rot) != expected_shape:
         raise ValueError(f'Rotation weights have shape {np.shape(weights.rot)}; expected {expected_shape}.')
-    auxiliary = {**model._impl.aux_defaults, **dict(cfg.get('aux_weights', {}))}
+    auxiliary = resolve_aux_weights(model, dict(cfg.get('aux_weights', {})))
     if set(weights.aux) != set(auxiliary):
         raise ValueError('Auxiliary weight names do not match the saved configuration.')
     for name, initial in auxiliary.items():
