@@ -39,9 +39,9 @@ class TestLoadConfig(unittest.TestCase):
         self.assertEqual(cfg, base)
         self.assertEqual(cfg.random_seed, 42)
         self.assertEqual(cfg.shots, -1)
-        self.assertEqual(cfg.min_epochs, 10)
+        self.assertEqual(cfg.min_epochs, 3)
         self.assertEqual(cfg.decay_rate, 0.5)
-        self.assertEqual(cfg.decay_patience, 3)
+        self.assertEqual(cfg.decay_patience, 2)
         self.assertNotIn('lr_decay', cfg)
         self.assertNotIn('patience', cfg)
 
