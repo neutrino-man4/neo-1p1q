@@ -46,6 +46,7 @@ conda run -n pennylane-gpu-sep2026 python train.py --print-config
 | `train.py` | Training entry point. Resolves configuration, creates the run, snapshots the circuit, builds loaders and the model, trains, checkpoints, and writes final artifacts. |
 | `run_experiments.py` | Repeated-run launcher. Freezes one resolved input configuration and starts consecutive random-seed runs with bounded process parallelism. |
 | `evaluate.py` | Evaluation entry point. Evaluates one certified run or evaluates and aggregates every random-seed run beneath an experiment directory. |
+| `publish_reports.py` | Builds the static interactive report site from saved validation histories, configurations, and evaluation results. |
 | `configs/base.yaml` | Single default configuration for the JetClass VQC. |
 | `configs/README.md` | Detailed description of configuration fields and command line overrides. |
 | `case_reader.py` | JetClass HDF5 loading, fixed feature scaling, class balancing, deterministic shuffling, and internal batching. |
@@ -156,6 +157,17 @@ python evaluate.py --experiment-dir /models/run_001 --num-cores 4
 ```
 
 It rejects training overrides and ambiguous sources. When `--model-dir` is omitted, single-run seed lookup uses `save_dir` from the current base config. `--num-cores` is valid only with `--experiment-dir` and is not a saved configuration field.
+
+Publish every numeric experiment as a static interactive report with:
+
+```bash
+python publish_reports.py --models-dir saved_models --results-dir results \
+  --output-dir /path/to/public/interactive/1P1Q
+```
+
+The publisher copies the frontend in `report_site/`, writes one JSON document per experiment,
+and replaces the experiment index last. Published data includes aggregate and individual
+validation AUC and ROC curves but excludes raw event scores, labels, and local filesystem paths.
 
 ## Circuit and score construction
 
