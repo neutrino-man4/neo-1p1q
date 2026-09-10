@@ -159,7 +159,7 @@ It rejects training overrides and ambiguous sources. When `--model-dir` is omitt
 
 ## Circuit and score construction
 
-`QuantumClassifier.from_config()` validates the required circuit fields, creates the PennyLane device, and asks the registry for the selected circuit. Shots greater than zero produce finite-shot execution. Nonpositive shots select analytic execution.
+`QuantumClassifier.from_config()` validates the required circuit fields, creates the PennyLane device, and asks the registry for the selected circuit. Shots greater than zero produce finite-shot execution. Nonpositive shots select analytic execution, which is the base default.
 
 `CircuitBase.build()` defines the common circuit order for every layer:
 

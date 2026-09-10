@@ -19,7 +19,7 @@ dump: './results'
 # Circuit
 wires: 4
 num_layers: 1
-shots: 2500
+shots: -1
 backend: 'autograd'
 device_name: 'lightning.qubit'
 circuit_type: 'normal'

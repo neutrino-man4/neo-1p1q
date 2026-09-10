@@ -38,6 +38,7 @@ class TestLoadConfig(unittest.TestCase):
         base = OmegaConf.load(_BASE)
         self.assertEqual(cfg, base)
         self.assertEqual(cfg.random_seed, 42)
+        self.assertEqual(cfg.shots, -1)
         self.assertEqual(cfg.min_epochs, 10)
         self.assertEqual(cfg.decay_rate, 0.5)
         self.assertEqual(cfg.decay_patience, 3)
