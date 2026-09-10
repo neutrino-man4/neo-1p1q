@@ -26,6 +26,7 @@ from helpers.trained_run import (
     load_circuit_snapshot,
     load_training_checkpoint,
     load_trained_run,
+    resolve_aux_weights,
     save_circuit_snapshot,
     save_trained_run,
 )
@@ -52,7 +53,10 @@ class TestSavedRun(unittest.TestCase):
         self.model = QuantumClassifier.from_config(self.cfg, circuit_registry=self.registry)
         self.weights = CircuitWeights(
             rot=qnp.array(np.arange(16).reshape(2, 2, 4) / 20),
-            aux={name: qnp.array(value) for name, value in self.cfg.aux_weights.items()},
+            aux={
+                name: qnp.array(value)
+                for name, value in resolve_aux_weights(self.model, dict(self.cfg.aux_weights)).items()
+            },
         )
         self.config_path = self.root / 'config.yaml'
         save_config(self.cfg, str(self.config_path))

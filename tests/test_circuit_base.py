@@ -7,6 +7,7 @@ Author: Aritra Bal (ETP)
 """
 import unittest
 
+import pennylane as qml
 import pennylane.numpy as np
 
 from quantum.circuits.base import RotationShape
@@ -42,12 +43,31 @@ class TestVQCMeasureValidation(unittest.TestCase):
         with self.assertRaises(ValueError):
             circuit.measure(weights, wires)
 
-    def test_default_length_matches_wires(self) -> None:
+    def test_missing_key_raises(self) -> None:
         circuit = VQCCircuit(num_layers=1)
         wires = list(range(4))
         weights = type('W', (), {'aux': {}})()
-        # should not raise -- default hamiltonian_coeffs is [0.1] * len(wires)
-        circuit.measure(weights, wires)
+        with self.assertRaises(KeyError):
+            circuit.measure(weights, wires)
+
+    def test_coeffs_train_independently_per_wire(self) -> None:
+        """Each wire's coefficient must get its own gradient (D2 extension)."""
+        circuit = VQCCircuit(num_layers=1)
+        wires = list(range(2))
+        dev = qml.device('default.qubit', wires=len(wires))
+
+        @qml.qnode(dev)
+        def score(coeffs):
+            qml.RY(0.3, wires=0)
+            qml.RY(0.7, wires=1)
+            weights = type('W', (), {'aux': {'hamiltonian_coeffs': coeffs}})()
+            return circuit.measure(weights, wires)
+
+        coeffs = np.array([0.1, 0.1], requires_grad=True)
+        gradient = qml.grad(score)(coeffs)
+        expected = np.array([np.cos(0.3), np.cos(0.7)])
+        self.assertTrue(np.allclose(gradient, expected))
+        self.assertNotAlmostEqual(float(gradient[0]), float(gradient[1]))
 
 
 class TestRegistryUnknownCircuit(unittest.TestCase):

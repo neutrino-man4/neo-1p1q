@@ -23,7 +23,7 @@ import case_reader as cr
 import helpers.utils as ut
 import quantum.architectures as arch
 import quantum.losses as loss
-from helpers.trained_run import latest_checkpoint
+from helpers.trained_run import latest_checkpoint, resolve_aux_weights
 from quantum.circuits.base import CircuitWeights
 
 _JETCLASS_DIR = '/ceph/abal/JetClass'
@@ -64,7 +64,7 @@ def _build_trainer(save_dir: str, batch_size: int, epochs: int, n_qubits: int = 
 
     shape = vqc._impl.rotation_shape(n_qubits, n_layers)
     rot = np.array(onp.random.uniform(0, np.pi, size=(shape.L, shape.N, shape.R)), requires_grad=True)
-    aux = {k: np.array(v, requires_grad=True) for k, v in vqc._impl.aux_defaults.items()}
+    aux = {k: np.array(v, requires_grad=True) for k, v in resolve_aux_weights(vqc).items()}
     init_weights = CircuitWeights(rot=rot, aux=aux)
 
     optimizer = qml.AdamOptimizer(stepsize=0.05)
@@ -101,7 +101,7 @@ def _run_seeded_training(random_seed: int):
         rot=np.array(initial, requires_grad=True),
         aux={
             name: np.array(value, requires_grad=True)
-            for name, value in vqc._impl.aux_defaults.items()
+            for name, value in resolve_aux_weights(vqc).items()
         },
     )
     trainer = arch.QuantumTrainer(

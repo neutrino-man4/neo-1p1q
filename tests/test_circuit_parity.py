@@ -31,7 +31,11 @@ class TestVQCCircuitWiring(unittest.TestCase):
             rot=np.array(
                 onp.random.uniform(0, np.pi, size=(self.num_layers, self.n_qubits, 3))
             ),
-            aux={'scale_factor': np.array(1.0), 'bias': np.array(0.1)},
+            aux={
+                'scale_factor': np.array(1.0),
+                'bias': np.array(0.1),
+                'hamiltonian_coeffs': np.array([0.1] * self.n_qubits),
+            },
         )
         self.inputs = np.array(
             onp.random.uniform(-1, 1, size=(1, self.n_qubits * self.num_layers, 3))
