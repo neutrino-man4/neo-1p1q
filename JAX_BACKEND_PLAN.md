@@ -149,7 +149,18 @@ pip install "pennylane==0.45.1" "pennylane-lightning==0.45.0" \
             "pennylane-lightning-gpu==0.45.0" "pennylane-lightning-kokkos==0.45.0" \
             "numpy==2.5.2" "scipy==1.18.1" "autograd==1.8.0" \
             "omegaconf==2.3.1" "h5py==3.16.0" "loguru==0.7.3" \
-            "scikit-learn==1.9.0" "tqdm==4.70.0" "wandb==0.29.0"
+            "scikit-learn==1.9.0" "tqdm==4.70.0" "wandb==0.29.0" \
+            "matplotlib>=3.9" "python-dotenv>=1.0"
+
+# torch is a genuine runtime dependency (torch.utils.data.DataLoader in
+# quantum/architectures.py, and the reference implementation in
+# tests/test_bce_logits.py) -- missed in the first version of this recipe,
+# which broke every test/train import. Install the CPU-only build: torch's
+# default PyPI wheel bundles its own nvidia-*-cu12 packages, which would
+# reintroduce exactly the CUDA library conflict this section's "What
+# actually happened" note describes, for zero benefit (torch here is only
+# ever used for data loading, never for GPU compute).
+pip install "torch==2.14.0" --index-url https://download.pytorch.org/whl/cpu
 
 # JAX, pinned -- see section 2 for why this exact version, not latest
 pip install "jax[cuda12_local]==0.10.2" "optax"
