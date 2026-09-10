@@ -452,6 +452,17 @@ class QuantumTrainer:
         self.quantum_loss = loss_fn
         self.history: Dict[str, List[float]] = {'train': [], 'val': [], 'auc': []}
         self.n_decays = 0
+
+        # jax backend: current_weights stays the single source of truth (read by
+        # validation, checkpointing, and final certification, all backend-agnostic);
+        # jax_params/jax_opt_state are the differentiable/optax-native mirror used
+        # only inside iteration()'s training step. restore_checkpoint() re-derives
+        # both from a restored current_weights on resume.
+        self.jax_params: Optional[Dict[str, Any]] = None
+        self.jax_opt_state: Optional[Any] = None
+        if self.backend == 'jax' and self.current_weights is not None:
+            self.jax_params = to_jax_pytree(self.current_weights)
+            self.jax_opt_state = self.optim.init(self.jax_params)
         
         # Directories (to be set later)
         self.save_dir: Optional[str] = None
@@ -478,6 +489,28 @@ class QuantumTrainer:
         Returns:
             Training loss (if train=True) or tuple of (validation loss, scores)
         """
+        if train and self.backend == 'jax':
+            import jax
+            import optax
+
+            def cost_fn(params: Dict[str, Any]) -> np.ndarray:
+                weights = CircuitWeights(
+                    rot=params['rot'],
+                    aux={key: value for key, value in params.items() if key != 'rot'},
+                )
+                return self.quantum_loss(
+                    weights, inputs=data, labels=labels,
+                    quantum_circuit=self.circuit, loss_type=self.loss_type,
+                )
+
+            cost, grads = jax.value_and_grad(cost_fn)(self.jax_params)
+            updates, self.jax_opt_state = self.optim.update(grads, self.jax_opt_state, self.jax_params)
+            self.jax_params = optax.apply_updates(self.jax_params, updates)
+            # self.current_weights must stay in sync on every call: validation,
+            # save_checkpoint(), and train.py's final save_trained_run() all read
+            # it directly and have no reason to know a jax branch exists.
+            self.current_weights = from_jax_pytree(self.jax_params)
+            return float(cost)
         if train:
             # step_and_cost needs each trainable piece as its own argument (a
             # CircuitWeights isn't itself differentiable) -- see D7. cost_fn
