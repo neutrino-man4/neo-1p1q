@@ -69,7 +69,7 @@ class TestRunExperiments(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config_path = self._config(directory)
 
-            def inspect_launch(path, seeds, cores):
+            def inspect_launch(path, seeds, cores, backend):
                 frozen = OmegaConf.load(path)
                 self.assertEqual(frozen.seed, 'changed')
                 self.assertNotIn('number_of_runs', frozen)
@@ -78,6 +78,7 @@ class TestRunExperiments(unittest.TestCase):
                 self.assertEqual(len(set(seeds)), 3)
                 self.assertTrue(all(isinstance(seed, int) and seed >= 0 for seed in seeds))
                 self.assertEqual(cores, 2)
+                self.assertEqual(backend, 'autograd')
                 return 0
 
             with patch.object(run_experiments, 'launch_runs', side_effect=inspect_launch):
@@ -119,7 +120,7 @@ class TestRunExperiments(unittest.TestCase):
     def test_scheduler_limits_active_processes(self) -> None:
         started = []
 
-        def start_process(_path, seed):
+        def start_process(_path, seed, _backend='autograd'):
             started.append(seed)
             return _FakeProcess()
 
@@ -134,7 +135,7 @@ class TestRunExperiments(unittest.TestCase):
     def test_scheduler_stops_after_failure(self) -> None:
         started = []
 
-        def start_process(_path, seed):
+        def start_process(_path, seed, _backend='autograd'):
             started.append(seed)
             return _FakeProcess(return_code=1 if seed == 10 else 0)
 
@@ -162,6 +163,19 @@ class TestRunExperiments(unittest.TestCase):
         for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
             self.assertEqual(captured['env'][name], '1')
         self.assertEqual(captured['env'].get('PATH'), os.environ.get('PATH'))
+        self.assertNotIn('XLA_PYTHON_CLIENT_PREALLOCATE', captured['env'])
+
+    def test_jax_backend_disables_gpu_memory_preallocation(self) -> None:
+        captured = {}
+
+        def popen(command, **kwargs):
+            captured.update(kwargs)
+            return _FakeProcess()
+
+        with patch.object(run_experiments.subprocess, 'Popen', side_effect=popen):
+            run_experiments._start_training('/tmp/config.yaml', 19, backend='jax')
+
+        self.assertEqual(captured['env']['XLA_PYTHON_CLIENT_PREALLOCATE'], 'false')
 
     def test_keyboard_interrupt_stops_active_children(self) -> None:
         process = _FakeProcess()

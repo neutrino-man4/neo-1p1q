@@ -60,8 +60,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _start_training(config_path: str, random_seed: int) -> subprocess.Popen:
-    """Start one single-threaded training subprocess."""
+def _start_training(config_path: str, random_seed: int, backend: str = 'autograd') -> subprocess.Popen:
+    """Start one single-threaded training subprocess.
+
+    backend='jax' sets XLA_PYTHON_CLIENT_PREALLOCATE=false in the child's
+    environment: JAX's default eager GPU memory preallocation (~75% of the
+    device on first touch) can make a second concurrent jax subprocess OOM
+    on a shared GPU even with memory free. Must be set before `import jax`
+    happens in that process, i.e. in its environment before Popen starts it.
+    """
     command = [
         sys.executable,
         str(Path(__file__).resolve().with_name('train.py')),
@@ -71,11 +78,15 @@ def _start_training(config_path: str, random_seed: int) -> subprocess.Popen:
     ]
     environment = os.environ.copy()
     environment.update(SINGLE_THREAD_ENV)
+    if backend == 'jax':
+        environment['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
     print(f'Launching random_seed={random_seed}')
     return subprocess.Popen(command, env=environment, start_new_session=True)
 
 
-def launch_runs(config_path: str, random_seeds: Sequence[int], num_cores: int) -> int:
+def launch_runs(
+    config_path: str, random_seeds: Sequence[int], num_cores: int, backend: str = 'autograd',
+) -> int:
     """Run at most ``num_cores`` single-threaded training processes concurrently."""
     pending = iter(random_seeds)
     active: dict[subprocess.Popen, int] = {}
@@ -91,7 +102,7 @@ def launch_runs(config_path: str, random_seeds: Sequence[int], num_cores: int) -
                     exhausted = True
                     break
                 try:
-                    process = _start_training(config_path, random_seed)
+                    process = _start_training(config_path, random_seed, backend)
                 except OSError as error:
                     failed = True
                     print(
@@ -169,7 +180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix='neo1p1q-runs-') as directory:
         resolved_config = str(Path(directory) / 'config.yaml')
         save_config(cfg, resolved_config)
-        return launch_runs(resolved_config, random_seeds, args.num_cores)
+        return launch_runs(resolved_config, random_seeds, args.num_cores, cfg.get('backend', 'autograd'))
 
 
 if __name__ == '__main__':
