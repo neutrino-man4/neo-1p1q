@@ -195,7 +195,8 @@ class QuantumClassifier:
         qnode = qml.QNode(
             lambda weights, inputs: self._impl.build(weights, inputs, self.auto_wires),
             self.device,
-            interface=self.backend
+            interface=self.backend,
+            diff_method='parameter-shift',
         )
         # Expand before differentiation so finite-shot parameter-shift supports
         # broadcast inputs whose encoded angles also contain trainable values.
