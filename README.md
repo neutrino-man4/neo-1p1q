@@ -52,7 +52,7 @@ python train.py \
 
 The run is saved under `<save_dir>/<seed>/<random_seed>/`. It contains the resolved `config.yaml`, a copy of the circuit source, epoch checkpoints, final weights, logs, history, and plots.
 
-Launch repeated runs with consecutive random seeds and bounded parallelism:
+Launch repeated runs, each with a randomly generated seed, and bounded parallelism:
 
 ```bash
 python run_experiments.py \
@@ -60,11 +60,10 @@ python run_experiments.py \
   --number-of-runs 10 \
   --num-cores 4 \
   seed=experiment_001 \
-  random_seed=42 \
   data_dir=/path/to/JetClass
 ```
 
-This launches seeds 42 through 51 and keeps at most four one-thread training processes active. The launcher options are not training configuration fields and are not stored with individual models.
+This launches 10 runs, each with its own randomly generated `random_seed`, and keeps at most four one-thread training processes active. The launcher options are not training configuration fields and are not stored with individual models.
 
 Resume the latest checkpoint for a run with:
 

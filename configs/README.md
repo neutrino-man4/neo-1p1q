@@ -54,18 +54,17 @@ The default paths are relative to the directory where the command is run. Overri
 
 ## Repeated runs
 
-`run_experiments.py` launches fresh runs with consecutive random seeds:
+`run_experiments.py` launches fresh runs, each with its own randomly generated `random_seed`:
 
 ```bash
 python run_experiments.py \
   --config configs/base.yaml \
   --number-of-runs 10 \
   --num-cores 4 \
-  seed=experiment_001 \
-  random_seed=42
+  seed=experiment_001
 ```
 
-`--number-of-runs` and `--num-cores` default to 1. They belong to the launcher, not the YAML, and are not saved with a model. Each subprocess uses one computational thread, so `--num-cores 4` permits at most four simultaneous training processes. The launcher does not resume runs; resume an individual saved configuration with `train.py --resume`.
+`--number-of-runs` and `--num-cores` default to 1. They belong to the launcher, not the YAML, and are not saved with a model. Each subprocess uses one computational thread, so `--num-cores 4` permits at most four simultaneous training processes. The launcher does not resume runs; resume an individual saved configuration with `train.py --resume`. `random_seed` is generated per run and rejected as an override on `run_experiments.py`; set it directly only when calling `train.py`.
 
 ## Data entries
 
