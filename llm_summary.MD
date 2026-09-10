@@ -193,7 +193,7 @@ The default `operations_per_qubit` is 3 and matches the RZ, RY, and RX parameter
 
 1. Fully resolves the incoming OmegaConf config, converts `seed` to a string, and validates the integer `random_seed`.
 2. Selects `<save_dir>/<seed>/<random_seed>` as the run directory and claims it atomically to prevent accidental overwrite.
-3. Creates the run and plot directories, initializes the `neo1P1Q` Weights & Biases project, and starts Loguru file logging.
+3. Creates the run and plot directories, initializes the `neo1P1Q` Weights & Biases project without local path settings, and starts Loguru file logging.
 4. Saves the exact resolved config to `config.yaml`.
 5. Copies `base.py`, `registry.py`, and `vqc.py` into the run's `circuits/` directory.
 6. Imports that saved registry and calculates SHA-256 hashes for the saved circuit files.

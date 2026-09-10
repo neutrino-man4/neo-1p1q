@@ -71,14 +71,14 @@ def main(cfg: DictConfig):
     pathlib.Path(plot_dir).mkdir(parents=True, exist_ok=True)
 
     # Initialize WandB
-    try:
-        run_str = f"{os.getlogin()}_{cfg.seed}"
-    except:
-        run_str = f"abal_{cfg.seed}"
+    run_str = str(cfg.seed)
     if random_seed is not None:
         run_str = f"{run_str}_{random_seed}"
-    
-    wandb.init(project="neo1P1Q", config=OmegaConf.to_container(cfg), name=run_str, notes=cfg.desc)
+
+    wandb_config = OmegaConf.to_container(cfg)
+    for path_key in ('data_dir', 'save_dir', 'dump'):
+        wandb_config.pop(path_key, None)
+    wandb.init(project="neo1P1Q", config=wandb_config, name=run_str, notes=cfg.desc)
     with open(os.path.join(save_dir, "wandb_run_id.txt"), "w") as f:
         f.write(wandb.run.id)
 
