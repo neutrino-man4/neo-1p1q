@@ -200,6 +200,7 @@ class TestSavedRun(unittest.TestCase):
         self.assertEqual(saved.wires, 2)
         self.assertEqual(saved.new_option.value, 7)
         self.assertFalse(saved.resume)
+        self.assertEqual(wandb.init.call_args.kwargs['project'], 'neo1P1Q')
 
     def test_latest_checkpoint_uses_numeric_epoch(self) -> None:
         checkpoint_dir = self.root / 'checkpoints'

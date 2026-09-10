@@ -78,7 +78,7 @@ def main(cfg: DictConfig):
     if random_seed is not None:
         run_str = f"{run_str}_{random_seed}"
     
-    wandb.init(project="1P1Q", config=OmegaConf.to_container(cfg), name=run_str, notes=cfg.desc)
+    wandb.init(project="neo1P1Q", config=OmegaConf.to_container(cfg), name=run_str, notes=cfg.desc)
     with open(os.path.join(save_dir, "wandb_run_id.txt"), "w") as f:
         f.write(wandb.run.id)
 
