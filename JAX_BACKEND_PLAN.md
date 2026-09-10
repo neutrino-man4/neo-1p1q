@@ -1,6 +1,11 @@
 # JAX backend feature plan
 
-Status: planning only, nothing implemented. Branch `feature-jax`. Written 2026-09-10.
+Status: planning only, nothing implemented. Branch `feature-jax`. Written 2026-09-10, revised
+2026-09-10 after an independent adversarial review (see inline "found in review"/"CRITICAL" notes,
+concentrated in sections 2, 4, 6, 7, 8) that independently reproduced the JAX-version-pin finding
+and surfaced one critical gap: the jax training branch must explicitly write back to
+`self.current_weights` (section 6, risk 0), or validation, checkpoints, and the final certified
+model silently use untrained weights.
 
 ## 1. Scope
 
@@ -62,6 +67,13 @@ break the jax backend the moment PennyLane's `jax-jit` interface path or `adjoin
 misleadingly still work, masking the incompatibility until a different diff_method or jit is
 tried.** Recheck this pin whenever PennyLane is upgraded — this is a PennyLane 0.45.1-specific
 constraint, not a permanent JAX ceiling.
+
+**Independently re-verified in a second review pass** (separate throwaway venv, `jax==0.10.2` vs.
+latest `jax==0.11.1` on PyPI at review time): 100% reproduction of the above, including the exact
+`ImportError: cannot import name 'concrete_or_error' from 'jax.core'` and
+`AttributeError: jax.core.is_concrete was deprecated in JAX v0.10.0 and removed in JAX v0.11.0.`
+messages, plus the Hamiltonian-coefficient parity table and the optax checkpoint round-trip. This
+is the plan's best-verified section — no correction needed to the pin itself.
 
 **Hamiltonian-coefficient differentiability under `interface='jax'` (parity check against the
 autograd-path finding in `llm_summary.MD` / problems.MD P9), verified with `jax==0.10.2`,
@@ -175,10 +187,14 @@ Notes for the implementor:
   diff_method `try/except` block's style and message quality). No other change needed here —
   `interface=self.backend` already passes `'jax'` straight through, and `broadcast_expand` is
   confirmed to work as-is (section 2).
-- Add a small helper (e.g. `_enable_jax_x64_once()` or inline in `QuantumClassifier.__init__`)
-  that calls `jax.config.update("jax_enable_x64", True)` exactly once, guarded (JAX warns/no-ops
-  on repeat calls, but keep it explicit and idempotent) — only when `backend_name == 'jax'`, so
-  importing `jax` at all stays conditional on this backend being selected (never import jax
+- Add a small helper (e.g. `_enable_jax_x64_once()`) called as the **first line of
+  `QuantumClassifier.__init__`, before `_set_device()` or anything else** (confirmed during review:
+  `train.py`'s full import/init sequence up to `QuantumClassifier.from_config()` — `pennylane.numpy`,
+  `wandb`, `torch.utils.data.DataLoader`, `omegaconf`, `matplotlib` — never imports or touches `jax`,
+  so this is early enough and the only correct place; do not place it in `set_circuit()`, which runs
+  later). It calls `jax.config.update("jax_enable_x64", True)` exactly once, guarded (JAX warns/
+  no-ops on repeat calls, but keep it explicit and idempotent) — only when `backend_name == 'jax'`,
+  so importing `jax` at all stays conditional on this backend being selected (never import jax
   eagerly at module load for the autograd path).
 - `CircuitWeights` construction / weight init (init happens in `train.py`, see below, but the
   container is defined here): keep the existing `pennylane.numpy`-based RNG init logic completely
@@ -199,8 +215,21 @@ Notes for the implementor:
   loss, grads = jax.value_and_grad(cost_fn)(self.jax_params, data, labels)
   updates, self.jax_opt_state = self.optim.update(grads, self.jax_opt_state, self.jax_params)
   self.jax_params = optax.apply_updates(self.jax_params, updates)
+  self.current_weights = from_jax_pytree(self.jax_params)  # see CRITICAL note below
   ```
   Wrap the whole step in `jax.jit` (see section 5) once correctness is confirmed unjitted first.
+  **CRITICAL (found in review):** the `self.current_weights = from_jax_pytree(...)` line above is
+  not optional. `self.current_weights` is a shared field read by three things regardless of
+  backend: `iteration(train=False)` (validation, called every epoch including epoch 0, ~line
+  458-459), `save_checkpoint()` (~line 678: `'weights': self.current_weights`), and
+  `train.py`'s post-training-loop call `save_trained_run(save_dir, cfg, VQC,
+  trainer.current_weights, ...)` (train.py:263) which certifies the final `trained_model.pickle`.
+  If the jax branch only mutates `self.jax_params`/`self.jax_opt_state` and never writes back to
+  `self.current_weights` on every training call, validation AUC is computed against the untouched
+  initial weights every epoch, per-epoch checkpoints hold untrained weights, and — most
+  dangerously — the final certified model silently contains the random initial weights instead of
+  the trained ones, with training logs/loss curves still looking normal. This must be fixed inside
+  `iteration()` itself, not deferred to checkpoint-writing time.
 - `QuantumTrainer.__init__`: accept an already-constructed `optax` `GradientTransformation` the
   same way it currently accepts a `qml.AdamOptimizer` instance via the `optimizer` kwarg — keep
   `self.optim` generic; add `self.jax_opt_state` / `self.jax_params`, initialized only when
@@ -219,12 +248,26 @@ Notes for the implementor:
   prefer the latter (keeps `'weights'` schema backend-agnostic, only `'optimizer'` diverges).
   `restore_checkpoint()` needs a backend branch that rehydrates `self.jax_opt_state` via
   `jax.tree_util.tree_map(jnp.asarray, ...)` instead of setting `self.optim.stepsize`/etc.
-- `helpers/trained_run.py`-facing validation of checkpoint provenance (resume's "Adam type,
-  hyperparameters, moments, and step counter" check, per `llm_summary.MD`) needs a backend-aware
-  branch too — validate optax state pytree structure/dtype/finiteness instead of the
-  `qml.AdamOptimizer` attribute set. Locate the exact validation function (search
-  `helpers/trained_run.py` for the resume checks referenced in `llm_summary.MD`'s Resumption
-  section) before implementing — not read in this planning pass.
+  **It must also rehydrate `self.jax_params`** from `self.current_weights` (which
+  `restore_checkpoint()` already sets from `payload['weights']` at ~line 706) via
+  `self.jax_params = to_jax_pytree(self.current_weights)` right after that assignment — found in
+  review. Without this, a resumed jax run restores the optimizer's momentum/step-count correctly
+  but continues training from whatever `self.jax_params` happens to hold (stale/uninitialized),
+  decoupled from the actually-restored weights.
+- `helpers/trained_run.py`'s `load_training_checkpoint()` (confirmed at lines ~98-164, function
+  identified during review) needs a backend-aware branch, and it is a real restructure, not a
+  local tweak. The function currently applies one hardcoded, unconditional gate:
+  `required_optimizer_fields = {'name', 'stepsize', 'beta1', 'beta2', 'eps', 'accumulation'}`
+  checked via `issubset(optimizer)` at line ~140, *before* the Adam-specific `accumulation`
+  structure check (`{'fm', 'sm', 't'}` keys, lines ~150-164). optax's proposed payload schema
+  (`{'name': 'optax_adam', 'hyperparams': {...}, 'opt_state': ...}`, section 4 above) has a
+  completely different field set, so it fails the existing `required_optimizer_fields` check
+  before ever reaching the accumulation logic. **Fix the plan's step 10 to be:** dispatch on
+  `optimizer.get('name')` immediately after the payload/config/circuit-signature checks and
+  *before* the `required_optimizer_fields` gate, with two fully separate field-set-and-structure
+  validators (one unchanged for `'AdamOptimizer'`, one new for `'optax_adam'` validating
+  `opt_state`'s `ScaleByAdamState(count, mu, nu)` + `EmptyState` pytree shape, dtypes, and
+  finiteness) — not an in-place adaptation of the existing single code path.
 
 **`train.py`**
 - Lines 207-217: branch optimizer construction on `cfg.backend`. For `'jax'`, construct
@@ -239,12 +282,19 @@ Notes for the implementor:
   confirm current subprocess launch mechanism there before implementing.
 
 **`run_experiments.py`**
-- No functional change required for correctness, but document (docstring/comment) the GPU memory
-  pitfall from section 2, and, if `--num-cores > 1` is used with `backend: 'jax'`, set
-  `XLA_PYTHON_CLIENT_PREALLOCATE=false` (or a computed `XLA_PYTHON_CLIENT_MEM_FRACTION`) in each
-  child subprocess's environment before it starts. Locate the actual subprocess-spawn call before
-  implementing (not read in this planning pass) — likely `subprocess.Popen`/`multiprocessing`
-  with an `env=` kwarg is the natural place.
+- Confirmed (during review) that `_start_training(config_path: str, random_seed: int)` (lines
+  63-75) launches each run via `subprocess.Popen(command, env=environment, start_new_session=True)`
+  with `sys.executable` — a fresh `exec`, not `multiprocessing.fork`, so there is no CUDA-context-
+  inheritance hazard from a jax-initialized parent forking; only the GPU-memory-preallocation
+  pitfall (section 2) applies, and it is straightforward to fix at the existing
+  `environment = os.environ.copy(); environment.update(SINGLE_THREAD_ENV)` block (~line 72-73).
+  **Concrete gap:** `_start_training()`'s current signature has no access to `cfg`/`backend` — only
+  a path to the frozen temp config YAML and the seed. Fix requires threading `cfg.backend` (or the
+  resolved backend string) through as a new parameter to `_start_training()` from its caller
+  `launch_runs()`, or re-reading the temp YAML inside `_start_training()`, so the env-var mitigation
+  can be applied conditionally (only when `backend == 'jax'` and `--num-cores > 1`). Document the
+  pitfall in a docstring/comment either way; only wire the actual env var if jax+concurrency is
+  exercised.
 
 **`publish_reports.py`**
 - Already reads and surfaces `cfg.get("backend")` (line 179) — no change expected, but add a
@@ -318,6 +368,19 @@ skewing the correctly-sample-weighted loss average.
 
 ## 6. Risks and pitfalls (ranked by how likely they are to bite)
 
+0. **(Added after review, highest priority) `self.current_weights` desync between the jax training
+   step and everything that reads it.** `QuantumTrainer.iteration()`'s validation branch,
+   `save_checkpoint()`, and `train.py`'s final `save_trained_run()` call all read
+   `self.current_weights` directly and are backend-agnostic by construction — they have no reason
+   to know a jax branch exists. If the jax `iteration(train=True)` branch updates only
+   `self.jax_params`/`self.jax_opt_state` and forgets to also write
+   `self.current_weights = from_jax_pytree(self.jax_params)` on every call, training *looks* normal
+   (loss decreasing in whatever variable is being logged) while validation AUC stays flat at the
+   initial-weight value, checkpoints silently hold untrained weights, and the final certified
+   `trained_model.pickle` — used by every downstream evaluation — certifies the random
+   initialization, not the trained model. See section 4's `iteration()`/`restore_checkpoint()`
+   bullets for the exact fix. Treat this as the single highest-priority correctness risk in the
+   whole feature, because it fails silently rather than crashing.
 1. **JAX version drift breaking PennyLane's jax interface silently** (section 2). Pin
    `jax==0.10.2` in the new env; add a one-line runtime assertion or test that fails loudly if a
    future `pip install -U` moves it past 0.10.x, since the failure mode without jit/adjoint is a
@@ -351,6 +414,11 @@ skewing the correctly-sample-weighted loss average.
    fallback.
 8. **`optax.inject_hyperparams` design choice for LR decay** (section 5) is left as an explicit
    implementor decision, not fully specified here — flagged so it isn't silently skipped.
+9. **Minor perf note, not a bug:** `iteration(train=False)` (architectures.py:466) wraps the
+   circuit's output via `pennylane.numpy.array(scores, requires_grad=False)` every validation
+   batch. For `backend='jax'` this forces a device-to-host array conversion each batch — correct
+   behavior, just a per-batch sync point worth a one-line comment in the code if GPU validation
+   throughput ever becomes a bottleneck.
 
 ## 7. Testing strategy
 
@@ -360,8 +428,13 @@ New tests, mirroring existing rigor:
   autograd golden-expectation-value test, but with `interface='jax'`, `diff_method='backprop'`,
   `default.qubit`, `jax_enable_x64` enabled — assert the jax-interface QNode output matches the
   existing autograd-interface golden value to a tight tolerance (e.g. `rtol=1e-6`) for identical
-  weights/inputs. Also add a `diff_method`/`shots>0` rejection test for `backend='jax'` mirroring
-  the existing diff_method validation tests.
+  weights/inputs. **Use a batch of size > 1 for this test**, not a single sample: the codebase
+  applies `qml.transforms.broadcast_expand` unconditionally at `architectures.py:221` for every
+  QNode regardless of backend, and the interaction of `broadcast_expand` + `interface='jax'` +
+  batched inputs/unbatched weights was not independently reproduced during plan review (only
+  single-sample calls were) — this test is what actually closes that gap. Also add a
+  `diff_method`/`shots>0` rejection test for `backend='jax'` mirroring the existing diff_method
+  validation tests.
 - **Hamiltonian-coefficient gradient test** (mirrors the P9 verification, now for `jax`): assert
   nonzero, correct `hamiltonian_coeffs` gradients under `backprop` and `parameter-shift` with
   `interface='jax'`, and exact zero under `adjoint` — codifying the section 2 finding as a
@@ -369,8 +442,12 @@ New tests, mirroring existing rigor:
   caught immediately.
 - **`tests/test_circuit_weights_checkpoint.py` addition:** round-trip test for the new optax-based
   checkpoint schema — init optax state, take a few `train_step`s, save (numpy-converted) payload,
-  reload, resume training, assert loss continues decreasing / moments match rather than resetting
-  (mirrors the section-2 smoke test already run in this session).
+  reload, resume training, and assert the resumed trajectory matches an uninterrupted run's
+  continuation (moments/step-count carry over correctly) — mirrors the section-2 smoke test. Do
+  NOT assert strict step-to-step loss monotonicity: independently re-verified during review that
+  near a minimum, per-step loss can tick up slightly after resume just as it can in an
+  uninterrupted run (normal Adam behavior), so a literal "loss keeps decreasing" assertion would be
+  flaky.
 - **`tests/test_config.py` addition:** `backend='jax'` accepted; `backend='jax'` + `shots>0`
   rejected with a clear `ValueError`.
 - **`tests/test_saved_run.py` / resume tests addition:** attempting to resume a `jax`-backend
@@ -395,18 +472,25 @@ New tests, mirroring existing rigor:
    isolation.
 5. Add the `CircuitWeights` <-> jax-pytree boundary conversion helper(s).
 6. Implement the unjitted jax branch in `QuantumTrainer.iteration()` (value_and_grad + optax
-   update), reusing the existing autograd branch's control flow shape as a template. Get this
-   correct and tested before adding `jax.jit`.
-7. Implement the optax checkpoint schema in `save_checkpoint`/`restore_checkpoint`; write the
-   checkpoint round-trip test (section 7).
+   update), reusing the existing autograd branch's control flow shape as a template. **Write back
+   to `self.current_weights` on every call** (section 4/6, risk 0) — do not defer this to
+   checkpoint time. Get this correct and tested before adding `jax.jit`.
+7. Implement the optax checkpoint schema in `save_checkpoint`/`restore_checkpoint`; in
+   `restore_checkpoint`, rehydrate **both** `self.jax_opt_state` and `self.jax_params` (the latter
+   via `to_jax_pytree(self.current_weights)` right after `self.current_weights` is set — section 4).
+   Write the checkpoint round-trip test (section 7), asserting trajectory continuity rather than
+   strict loss monotonicity.
 8. Wire `train.py`'s optimizer construction (lines 207-217) to branch on `cfg.backend`.
 9. Wrap the jax training step in `jax.jit` per section 5; decide and implement the LR-decay
    mechanism (`inject_hyperparams` recommended); verify no recompilation-per-epoch regression via
    a quick manual timing check (not a committed test).
-10. Address `helpers/trained_run.py`'s resume-provenance validation for the optax schema (locate
-    the exact function first — not identified precisely in this planning pass).
-11. Document the GPU-memory-preallocation mitigation in `run_experiments.py` (comment at minimum;
-    implement the per-subprocess env var if `--num-cores`+jax concurrency is actually exercised).
+10. Restructure `helpers/trained_run.py`'s `load_training_checkpoint()` (lines ~98-164) to dispatch
+    on `optimizer.get('name')` *before* the existing `required_optimizer_fields` gate (~line 140),
+    with two fully separate validators — the existing one for `'AdamOptimizer'` untouched, a new
+    one for `'optax_adam'` checking its `opt_state` pytree shape/dtype/finiteness (section 4).
+11. Document the GPU-memory-preallocation mitigation in `run_experiments.py`; thread `cfg.backend`
+    through `launch_runs()`/`_start_training()` (signature change — section 4) and implement the
+    per-subprocess env var if `--num-cores`+jax concurrency is actually exercised.
 12. Update `configs/README.md` and `llm_summary.MD` to describe the shipped feature (per this
     repo's AGENTS.md convention of updating `llm_summary.MD` after changes).
 13. Run the new/affected tests, then the full suite once; review `git diff --check` and the full
