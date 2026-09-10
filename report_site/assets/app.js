@@ -8,8 +8,10 @@
  *   data/index.json lists experiment summaries under `experiments`; each item
  *   has id, status, run_count, successful_runs, mean_auc, std_auc, total_jets,
  *   loss, device, and mode.
- *   data/<id>.json provides `summary`, `validation`, `roc`, `runs`,
- *   `config`, and `notices`. Missing values are displayed rather than inferred.
+ *   data/<id>.json provides `summary`, `validation`, `roc`, `score_distribution`,
+ *   `runs`, `config`, and `notices`. Missing values are displayed rather than
+ *   inferred. `score_distribution.runs` is shown per seed only -- it has no
+ *   aggregate view.
  */
 
 "use strict";
@@ -18,8 +20,8 @@ const app = document.querySelector("#app");
 const params = new URLSearchParams(window.location.search);
 const experimentId = params.get("experiment");
 const COLORS = [
-  "#49694d", "#b06945", "#536f91", "#8b5d85", "#a0833e",
-  "#397b78", "#875449", "#687a3d", "#6e638d", "#b1515b",
+  "#7fdb95", "#e0916a", "#7fb1e0", "#c295cc", "#e0c15c",
+  "#5cc9c2", "#e0a394", "#a8c96f", "#b3a3e0", "#e08aa0",
 ];
 
 const PLOT_CONFIG = {
@@ -156,6 +158,14 @@ function renderReport(data) {
       ${chartCard("Receiver operating characteristic", "roc-chart", "roc")}
     </section>
 
+    <section class="report-section" aria-labelledby="score-title">
+      <div class="section-heading">
+        <div><p class="eyebrow">Inference</p><h2 id="score-title">Classifier score distribution</h2></div>
+        <p>Signal and background test-set score densities, shown independently per random seed.</p>
+      </div>
+      ${renderScoreDistributionCard(data.score_distribution)}
+    </section>
+
     <section class="report-section" aria-labelledby="runs-title">
       <div class="section-heading">
         <div><p class="eyebrow">Run detail</p><h2 id="runs-title">Evaluated runs</h2></div>
@@ -175,6 +185,12 @@ function renderReport(data) {
   renderRocPlot(data.roc ?? {}, "aggregate");
   setupChartToggle("validation", (mode) => renderValidationPlot(data.validation ?? {}, mode));
   setupChartToggle("roc", (mode) => renderRocPlot(data.roc ?? {}, mode));
+
+  const distributionRuns = sortedRuns(data.score_distribution?.runs);
+  if (distributionRuns.length) {
+    renderScoreDistributionPlot(distributionRuns, distributionRuns[0].random_seed);
+    setupSeedToggle("score-seed-selector", (seed) => renderScoreDistributionPlot(distributionRuns, seed));
+  }
 }
 
 function statCard(label, value) {
@@ -234,7 +250,7 @@ function renderValidationPlot(validation, mode) {
       error_y: {
         type: "data",
         array: points.map((point) => point.std ?? point.std_auc),
-        color: "rgba(73,105,77,0.58)",
+        color: "rgba(127,219,149,0.55)",
         thickness: 1.2,
         width: 3,
         visible: true,
@@ -242,8 +258,8 @@ function renderValidationPlot(validation, mode) {
       type: "scatter",
       mode: "lines+markers",
       name: "Mean AUC",
-      line: { color: "#49694d", width: 3 },
-      marker: { color: "#49694d", size: 7 },
+      line: { color: "#7fdb95", width: 3 },
+      marker: { color: "#7fdb95", size: 7 },
       hovertemplate: "Epoch %{x}<br>Mean AUC %{y:.4f}<br>Std. dev. %{customdata[0]:.4f}<br>%{customdata[1]} contributing runs<extra></extra>",
     }] : [];
   }
@@ -281,7 +297,7 @@ function renderRocPlot(roc, mode) {
       const upper = points.map((point) => clamp(Number(point.mean_tpr) + Number(point.std_tpr), 0, 1));
       traces = [
         { x, y: lower, type: "scatter", mode: "lines", line: { width: 0 }, hoverinfo: "skip", showlegend: false },
-        { x, y: upper, type: "scatter", mode: "lines", line: { width: 0 }, fill: "tonexty", fillcolor: "rgba(122,158,126,0.23)", hoverinfo: "skip", name: "1 std. dev." },
+        { x, y: upper, type: "scatter", mode: "lines", line: { width: 0 }, fill: "tonexty", fillcolor: "rgba(127,219,149,0.2)", hoverinfo: "skip", name: "1 std. dev." },
         {
           x,
           y: points.map((point) => point.mean_tpr),
@@ -289,7 +305,7 @@ function renderRocPlot(roc, mode) {
           type: "scatter",
           mode: "lines",
           name: "Mean ROC",
-          line: { color: "#49694d", width: 3 },
+          line: { color: "#7fdb95", width: 3 },
           hovertemplate: "FPR %{x:.4f}<br>Mean TPR %{y:.4f}<br>Std. dev. %{customdata[0]:.4f}<br>%{customdata[1]} contributing runs<extra></extra>",
         },
       ];
@@ -298,7 +314,7 @@ function renderRocPlot(roc, mode) {
   if (traces.length) {
     traces.push({
       x: [0, 1], y: [0, 1], type: "scatter", mode: "lines", name: "Random classifier",
-      line: { color: "#8b8f89", width: 1.4, dash: "dot" }, hoverinfo: "skip",
+      line: { color: "#7c848c", width: 1.4, dash: "dot" }, hoverinfo: "skip",
     });
   }
   drawPlot(target, traces, {
@@ -306,6 +322,73 @@ function renderRocPlot(roc, mode) {
     yaxis: { title: "True positive rate", range: [0, 1], scaleanchor: "x", scaleratio: 1 },
     showlegend: true,
   }, "No ROC data is available for this experiment.");
+}
+
+function renderScoreDistributionCard(scoreDistribution) {
+  const runs = sortedRuns(scoreDistribution?.runs);
+  if (!runs.length) {
+    return '<div class="empty-state"><p>No score distribution is available for this experiment.</p></div>';
+  }
+  return `
+    <div class="chart-card">
+      <div class="chart-toolbar">
+        <strong>Classifier score distribution</strong>
+        <div class="segmented" id="score-seed-selector" role="group" aria-label="Classifier score distribution seed">
+          ${runs.map((run, index) => `
+            <button type="button" data-seed="${safeText(run.random_seed)}" aria-pressed="${index === 0}">Seed ${safeText(run.random_seed)}</button>
+          `).join("")}
+        </div>
+      </div>
+      <div class="chart" id="score-chart" role="img" aria-label="Classifier score distribution plot"></div>
+    </div>`;
+}
+
+function renderScoreDistributionPlot(runs, seed) {
+  const target = document.querySelector("#score-chart");
+  if (!window.Plotly) {
+    renderChartError(target, "Plotly could not be loaded.");
+    return;
+  }
+  const run = runs.find((candidate) => String(candidate.random_seed) === String(seed));
+  const centers = binCenters(run?.bin_edges);
+  const width = Array.isArray(run?.bin_edges) && run.bin_edges.length > 1
+    ? run.bin_edges[1] - run.bin_edges[0]
+    : undefined;
+  const traces = centers.length ? [
+    {
+      x: centers, y: run.background_density, type: "bar", name: "Background",
+      marker: { color: "#e0916a" }, opacity: 0.6, width,
+      hovertemplate: "Score %{x:.4f}<br>Background density %{y:.4f}<extra></extra>",
+    },
+    {
+      x: centers, y: run.signal_density, type: "bar", name: "Signal",
+      marker: { color: "#7fb1e0" }, opacity: 0.6, width,
+      hovertemplate: "Score %{x:.4f}<br>Signal density %{y:.4f}<extra></extra>",
+    },
+  ] : [];
+  drawPlot(target, traces, {
+    xaxis: { title: "Classifier score" },
+    yaxis: { title: "Density" },
+    barmode: "overlay",
+    showlegend: true,
+  }, "No score distribution is available for this seed.");
+}
+
+function setupSeedToggle(containerId, render) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const buttons = [...container.querySelectorAll("button")];
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      buttons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+      render(button.dataset.seed);
+    });
+  });
+}
+
+function binCenters(edges) {
+  if (!Array.isArray(edges) || edges.length < 2) return [];
+  return edges.slice(0, -1).map((edge, index) => (edge + edges[index + 1]) / 2);
 }
 
 function drawPlot(target, traces, axes, emptyMessage) {
@@ -317,16 +400,16 @@ function drawPlot(target, traces, axes, emptyMessage) {
     ...axes,
     autosize: true,
     margin: { l: 65, r: 25, t: 30, b: 62 },
-    paper_bgcolor: "#fbfaf7",
-    plot_bgcolor: "#fbfaf7",
-    font: { family: '"DM Sans", system-ui, sans-serif', color: "#555a54", size: 12 },
-    hoverlabel: { bgcolor: "#1c1e1b", bordercolor: "#1c1e1b", font: { color: "#ffffff" } },
+    paper_bgcolor: "#1a1d24",
+    plot_bgcolor: "#1a1d24",
+    font: { family: '"DM Sans", system-ui, sans-serif', color: "#aab3ac", size: 12 },
+    hoverlabel: { bgcolor: "#262a32", bordercolor: "#262a32", font: { color: "#eef1ee" } },
     legend: { orientation: "h", yanchor: "bottom", y: 1.02, xanchor: "left", x: 0 },
   };
   for (const axisName of ["xaxis", "yaxis"]) {
     layout[axisName] = {
-      gridcolor: "rgba(73,105,77,0.11)",
-      zerolinecolor: "rgba(73,105,77,0.19)",
+      gridcolor: "rgba(127,219,149,0.12)",
+      zerolinecolor: "rgba(127,219,149,0.22)",
       fixedrange: false,
       ...layout[axisName],
     };
