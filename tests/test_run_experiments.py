@@ -65,17 +65,18 @@ class TestRunExperiments(unittest.TestCase):
         OmegaConf.save(cfg, path)
         return str(path)
 
-    def test_main_freezes_config_and_generates_consecutive_seeds(self) -> None:
+    def test_main_freezes_config_and_generates_random_seeds(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = self._config(directory)
 
             def inspect_launch(path, seeds, cores):
                 frozen = OmegaConf.load(path)
                 self.assertEqual(frozen.seed, 'changed')
-                self.assertEqual(frozen.random_seed, 7)
                 self.assertNotIn('number_of_runs', frozen)
                 self.assertNotIn('num_cores', frozen)
-                self.assertEqual(seeds, [7, 8, 9])
+                self.assertEqual(len(seeds), 3)
+                self.assertEqual(len(set(seeds)), 3)
+                self.assertTrue(all(isinstance(seed, int) and seed >= 0 for seed in seeds))
                 self.assertEqual(cores, 2)
                 return 0
 
@@ -85,9 +86,14 @@ class TestRunExperiments(unittest.TestCase):
                     '--number-of-runs', '3',
                     '--num-cores', '2',
                     'seed=changed',
-                    'random_seed=7',
                 ])
             self.assertEqual(result, 0)
+
+    def test_main_rejects_random_seed_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = self._config(directory)
+            with self.assertRaisesRegex(ValueError, 'generated per run'):
+                run_experiments.main(['--config', config_path, 'random_seed=7'])
 
     def test_launcher_rejects_resume_and_misplaced_options(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -104,7 +110,8 @@ class TestRunExperiments(unittest.TestCase):
             config_path = self._config(directory)
             destination = Path(directory) / 'models' / 'experiment' / '42'
             destination.mkdir(parents=True)
-            with patch.object(run_experiments, 'launch_runs') as launch:
+            with patch.object(run_experiments, '_generate_random_seeds', return_value=[42]), \
+                    patch.object(run_experiments, 'launch_runs') as launch:
                 with self.assertRaisesRegex(FileExistsError, str(destination)):
                     run_experiments.main(['--config', config_path])
             launch.assert_not_called()
