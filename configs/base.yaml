@@ -27,6 +27,7 @@ operations_per_qubit: 3
 aux_weights:
   scale_factor: 1.0
   bias: 0.1
+  hamiltonian_coeffs: 0.1
 
 # Optimization
 batch_size: 100

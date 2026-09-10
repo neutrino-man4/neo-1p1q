@@ -188,12 +188,12 @@ For the maintained `VQCCircuit`:
 - The trainable scale is `2 * pi * sigmoid(aux_weights.scale_factor) + 1`.
 - Entanglement is a CNOT ring from each wire to the next, with the last wire connected to wire 0.
 - Trainable gates are `Rot(0, ry, rz)` followed by `RX(rx)` on each wire.
-- Measurement is the expectation value of a Hamiltonian containing one Pauli Z term per wire. Coefficients default to 0.1 per wire.
+- Measurement is the expectation value of a Hamiltonian containing one Pauli Z term per wire. Each wire's coefficient is independently trainable, all starting from `aux_weights.hamiltonian_coeffs` (default 0.1).
 
 `CircuitWeights` separates parameters into:
 
 - `rot`, normally shaped `(num_layers, wires, operations_per_qubit)`.
-- `aux`, a mapping of named trainable values. The default VQC uses `scale_factor` and `bias`.
+- `aux`, a mapping of named trainable values. The default VQC uses `scale_factor` and `bias` (both scalars) and `hamiltonian_coeffs` (one independent value per wire, broadcast from a single starting scalar by `helpers.trained_run.resolve_aux_weights()`).
 
 The default `operations_per_qubit` is 3 and matches the RZ, RY, and RX parameters consumed by `VQCCircuit.rotate()`.
 

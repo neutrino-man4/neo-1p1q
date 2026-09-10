@@ -103,6 +103,7 @@ The circuit consumes `wires * num_layers` particles per jet by default. Set `num
 | `operations_per_qubit` | Trainable rotation parameters per qubit and layer. The current VQC requires `3` for its RZ, RY, and RX rotations. |
 | `aux_weights.scale_factor` | Initial trainable scale applied during angle encoding. |
 | `aux_weights.bias` | Initial trainable bias added to the circuit output before the loss is calculated. |
+| `aux_weights.hamiltonian_coeffs` | Starting value for each wire's Hamiltonian coefficient. Broadcast to one independent trainable value per wire; each trains separately from this shared starting point. |
 
 These entries define the circuit and weight shapes. Changing them when evaluating an existing run would produce a different model, so evaluation does not accept overrides.
 
