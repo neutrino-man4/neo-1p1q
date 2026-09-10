@@ -28,7 +28,6 @@ FRONTEND_FILES = (
     Path("index.html"),
     Path("assets/app.js"),
     Path("assets/styles.css"),
-    Path("assets/plotly.min.js"),
 )
 
 

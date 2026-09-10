@@ -28,6 +28,9 @@ __pycache__/
 outputs/
 saved_models/
 best_models/
+results/
+wandb/
+report_site/assets/plotly.min.js
 *.zip
 *.gz
 *.h5
