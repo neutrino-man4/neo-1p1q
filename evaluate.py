@@ -28,6 +28,18 @@ from helpers.config import SINGLE_THREAD_ENV, parse_evaluation_args, run_directo
 from helpers.trained_run import CIRCUIT_FILES, load_trained_run
 
 
+def _plot_score_distribution(scores: np.ndarray, labels: np.ndarray, path: str) -> None:
+    """Save a signal-vs-background classifier score histogram to path."""
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.hist(scores[labels == 1], bins=30, alpha=0.5, density=True, label='signal')
+    ax.hist(scores[labels == 0], bins=30, alpha=0.5, density=True, label='background')
+    ax.set_xlabel('Classifier score', size=16)
+    ax.set_ylabel('Density', size=16)
+    ax.legend(prop={'size': 14})
+    fig.savefig(path)
+    plt.close(fig)
+
+
 def main(config_path: str) -> dict[str, object]:
     """Verify a saved run, evaluate its final weights, and report test ROC/AUC."""
     config_path = str(pathlib.Path(config_path).expanduser().resolve())
@@ -91,6 +103,10 @@ def main(config_path: str) -> dict[str, object]:
     fig.savefig(os.path.join(plot_dir, 'roc_curve.png'))
     plt.close(fig)
     logger.info(f"Saved ROC curve to {os.path.join(plot_dir, 'roc_curve.png')}")
+
+    score_dist_path = os.path.join(plot_dir, 'score_distribution.png')
+    _plot_score_distribution(scores, labels, score_dist_path)
+    logger.info(f"Saved score distribution to {score_dist_path}")
     return results
 
 
