@@ -1,6 +1,6 @@
 # Repository guide for future agents
 
-This document describes the repository as it exists on 2026-09-09. Read either `AGENTS.md` or `.claude/CLAUDE.md` (this redirects back to `AGENTS.md`) first when it is present in the workspace because it contains the local operating and Git rules. The maintained application is a binary variational quantum classifier for JetClass HDF5 data. The supported entry points are `train.py`, `run_experiments.py`, and `evaluate.py`.
+This document describes the repository as it exists on 2026-09-10. Read either `AGENTS.md` or `.claude/CLAUDE.md` (this redirects back to `AGENTS.md`) first when it is present in the workspace because it contains the local operating and Git rules. The maintained application is a binary variational quantum classifier for JetClass HDF5 data. The supported entry points are `train.py`, `run_experiments.py`, and `evaluate.py`.
 
 ## Current scope
 
@@ -17,7 +17,7 @@ There is no active QAE, VPC, AOJ, probabilistic-output, or private Delphes workf
 
 ## Environment and common commands
 
-Use the Conda environment `pennylane-gpu-sep2026` for repository work. The environment verified on 2026-09-09 contains Python 3.14.7, PennyLane 0.45.1, and PennyLane-Lightning 0.45.0. The inherited shell may still report Conda `base`, so use `conda run` when there is any doubt:
+Use the Conda environment `pennylane-gpu-sep2026` for repository work. The environment verified on 2026-09-10 contains Python 3.14.7, PennyLane 0.45.1, and PennyLane-Lightning 0.45.0. The inherited shell may still report Conda `base`, so use `conda run` when there is any doubt:
 
 ```bash
 conda run -n pennylane-gpu-sep2026 python --version
@@ -58,8 +58,9 @@ conda run -n pennylane-gpu-sep2026 python train.py --print-config
 | `quantum/math_functions.py` | Small differentiable MSE and stable BCE-with-logits implementations. |
 | `helpers/config.py` | OmegaConf loading, CLI parsing, config saving, and evaluation config lookup. |
 | `helpers/trained_run.py` | Circuit snapshots, fingerprints, checkpoint validation, final model validation, and saved-run reconstruction. |
-| `helpers/utils.py` | Feature index constants and general pickle helpers still used by training and evaluation. |
-| `tests/` | Unit, integration, checkpoint, reconstruction, and data-loader tests. |
+| `helpers/utils.py` | Feature index constants, `sigmoid()`, and general pickle helpers still used by training and evaluation. |
+| `report_site/` | Static frontend (`index.html`, `assets/app.js`, `assets/styles.css`) rendered by `publish_reports.py`'s output; dark theme by default. |
+| `tests/` | Unit, integration, checkpoint, reconstruction, data-loader, and report-publication tests. |
 
 The repository uses namespace packages and has no tracked `__init__.py` files under `helpers/` or `quantum/`. Run commands from the repository root so those imports resolve naturally.
 
@@ -327,17 +328,18 @@ MPLCONFIGDIR=/tmp/matplotlib conda run -n pennylane-gpu-sep2026 \
   python -m unittest discover -s tests -q
 ```
 
-The suite contained 66 passing tests at the last verification on 2026-09-09. JetClass integration tests are guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist.
+The suite contained 74 passing tests at the last verification on 2026-09-10. JetClass integration tests are guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist (true in this environment, so they now run as part of the full suite).
 
 | Test file | Coverage |
 | --- | --- |
 | `test_bce_logits.py` | BCE value and gradient parity with PyTorch, including gradients through circuit output and bias. |
 | `test_circuit_base.py` | Rotation shape bounds, Hamiltonian coefficient length, and circuit registry errors. |
-| `test_circuit_parity.py` | VQC wiring parity and a fixed golden expectation value. |
+| `test_circuit_parity.py` | VQC wiring parity, a fixed golden expectation value, and `diff_method` validation errors. |
 | `test_circuit_weights_checkpoint.py` | Pickle round trip for structured rotation and auxiliary weights. |
 | `test_config.py` | Typed and nested OmegaConf overrides, random-seed validation, run paths, resume flag, config printing, and byte-stable save/load. |
 | `test_end_to_end.py` | Training, finite-shot reproducibility, sample-weighted partial batches, inference cardinality, checkpoints, Adam resumption, and optional real JetClass loading. |
 | `test_evaluate_experiment.py` | Experiment discovery, incomplete-run logging, bounded evaluation parallelism, interruption, thread limits, and aggregate ROC reporting. |
+| `test_publish_reports.py` | Report JSON structure, path redaction, and aggregate/per-run plot data (including score-distribution histograms). |
 | `test_run_experiments.py` | Launcher configuration ownership, random seed generation, concurrency limits, failure handling, interruption, and child thread limits. |
 | `test_saved_run.py` | Saved circuit imports, legacy compatibility, nested paths, config and hash mismatch rejection, final weight validation, checkpoint provenance, CLI restrictions, and mocked training-to-evaluation flow. |
 
@@ -383,7 +385,6 @@ These files are not called by `train.py` or `evaluate.py`:
 - `helpers/get_free_gpu_id.py` is an unused NVIDIA selection helper. It imports pandas, which is not a maintained runtime dependency.
 - `plotters/plot_hist.py` expects older fidelity and cost arrays from a quantum autoencoder workflow.
 - `network_runs/logs.log` is a historical output.
-- `summary.txt` is an old task prompt, not application documentation.
 
 Within maintained modules, `select_subjet_constituents`, the semiclassical loss functions, `batched_VQC_cost`, `QuantumClassifier.load_weights`, and the evictable EOS path are not used by the supported entry points. Do not build new behavior on them without first confirming that the user wants those paths restored.
 
