@@ -47,6 +47,26 @@ def _enable_jax_x64_once() -> None:
     _jax_x64_enabled = True
 
 
+def to_jax_pytree(weights: CircuitWeights) -> Dict[str, Any]:
+    """Convert CircuitWeights into a flat dict pytree of JAX arrays.
+
+    The narrow seam between the backend-agnostic CircuitWeights used for
+    initialization/checkpointing and the jax training step, which needs a
+    plain pytree to differentiate and jit through.
+    """
+    import jax.numpy as jnp
+    pytree = {'rot': jnp.array(weights.rot)}
+    pytree.update({name: jnp.array(value) for name, value in weights.aux.items()})
+    return pytree
+
+
+def from_jax_pytree(pytree: Dict[str, Any]) -> CircuitWeights:
+    """Convert a flat dict pytree of (JAX or plain) arrays back into CircuitWeights."""
+    rot = np.array(pytree['rot'], requires_grad=True)
+    aux = {name: np.array(value, requires_grad=True) for name, value in pytree.items() if name != 'rot'}
+    return CircuitWeights(rot=rot, aux=aux)
+
+
 class QuantumClassifier:
     """
     A Quantum Classifier that uses quantum circuits for classification tasks.
