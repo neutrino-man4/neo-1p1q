@@ -451,6 +451,7 @@ def _write_json_atomic(path: Path, document: dict[str, Any]) -> None:
         temporary = Path(stream.name)
         json.dump(document, stream, indent=2, allow_nan=False)
         stream.write("\n")
+    temporary.chmod(0o644)
     temporary.replace(path)
 
 

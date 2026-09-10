@@ -6,6 +6,7 @@ Date: 2026-09-10
 """
 
 import json
+import stat
 from pathlib import Path
 import pickle
 import tempfile
@@ -146,6 +147,10 @@ class TestReportPublication(unittest.TestCase):
         for relative_path in publish_reports.FRONTEND_FILES:
             self.assertTrue((self.output / relative_path).is_file())
         self.assertTrue((self.output / "data" / "index.json").is_file())
+        self.assertEqual(
+            stat.S_IMODE((self.output / "data" / "index.json").stat().st_mode),
+            0o644,
+        )
 
     def test_redacts_paths_and_preserves_missing_artifact_notices(self) -> None:
         self._write_run("001", 40, [0.5, 0.6], [0.1, 0.2, 0.8, 0.9], [0, 0, 1, 1])
