@@ -7,7 +7,10 @@ independently reproduced the JAX-version-pin finding and surfaced one critical g
 training branch must explicitly write back to `self.current_weights` (section 6, risk 0), or
 validation, checkpoints, and the final certified model silently use untrained weights. Task-list
 step 1 (env creation + real GPU verification, including PennyLane+jax+Hamiltonian-coefficient
-gradients+jit on actual GPU hardware) is now done — see section 3.
+gradients+jit on actual GPU hardware) is now done — see section 3. Implementation attempt on
+2026-09-10 found and stopped on a second gap missed by every earlier pass: `quantum/losses.py`/
+`quantum/math_functions.py` are hardcoded to `pennylane.numpy` and break `backend='jax'` training
+entirely (section 4, section 6 risk 1). User-approved fix recorded; implementation resuming.
 
 ## 1. Scope
 
@@ -304,6 +307,33 @@ Other notes:
   `opt_state`'s `ScaleByAdamState(count, mu, nu)` + `EmptyState` pytree shape, dtypes, and
   finiteness) — not an in-place adaptation of the existing single code path.
 
+**`quantum/losses.py` / `quantum/math_functions.py` (found during implementation, missing from
+every earlier pass of this plan — added 2026-09-10)**
+- Both files unconditionally `import pennylane.numpy as np` and use it throughout, including
+  `VQC_cost`'s `np.array(loss_fn, requires_grad=True)` (`losses.py:71`, autograd-only kwarg) and
+  `binary_cross_entropy_with_logits`'s `np.logaddexp(0.0, logits)` (`math_functions.py:22`).
+  Empirically confirmed this breaks `backend='jax'` training completely once tracing reaches these
+  shared functions (`TracerArrayConversionError`), even though the QNode/circuit-construction layer
+  traces and differentiates correctly on its own. This makes `VQC_cost` and its loss registry a
+  real seam the plan missed, not just `quantum/architectures.py`/weights.
+- **Verified fix (empirically confirmed for both interfaces):** switch `reshape`/`mean`/`array`/
+  `shape` calls in both files to `qml.math.*` equivalents (these dispatch correctly for both
+  `autograd` and `jax` inputs). `qml.math.logaddexp` itself is NOT reliable under tracing in this
+  PennyLane version for either interface (confirmed `qml.math.exp`/`log1p` also break under plain
+  autograd tracing here: `AttributeError: 'ArrayBox' object has no attribute 'exp'`) — add one
+  explicit interface branch (e.g. via `qml.math.get_interface(logits) == 'jax'`) selecting
+  `jax.numpy.logaddexp` vs `pennylane.numpy.logaddexp` only for that one op, keeping a single
+  shared `binary_cross_entropy_with_logits`/`VQC_cost` rather than duplicating the loss module.
+  **User decision (2026-09-10): implement this single-shared-function fix, not a separate
+  jax-specific loss module** — matches this repo's anti-duplication convention, at the cost of the
+  autograd path's loss functions now running through `qml.math` dispatch instead of raw
+  `pennylane.numpy` for `reshape`/`mean`/`array`/`shape` (must be proven behavior-preserving via
+  the existing BCE/MSE value/gradient parity tests passing unchanged — do not weaken or skip those
+  tests to make this land).
+- `semi_classical_cost`/`batch_semi_classical_cost` in `losses.py` are legacy/unused code
+  (`llm_summary.MD`'s "Peripheral and legacy files") — do not touch them for this feature; only
+  `VQC_cost`, `mean_squared_error`, and `binary_cross_entropy_with_logits` are in scope.
+
 **`train.py`**
 - Lines 207-217: branch optimizer construction on `cfg.backend`. For `'jax'`, construct
   `optax.adam(learning_rate=cfg.lr)` (resume case reads hyperparams from the saved checkpoint's
@@ -416,7 +446,16 @@ skewing the correctly-sample-weighted loss average.
    initialization, not the trained model. See section 4's `iteration()`/`restore_checkpoint()`
    bullets for the exact fix. Treat this as the single highest-priority correctness risk in the
    whole feature, because it fails silently rather than crashing.
-1. **JAX version drift breaking PennyLane's jax interface silently** (section 2). Pin
+1. **(Found during implementation, 2026-09-10) `quantum/losses.py`/`quantum/math_functions.py`
+   hardcoded to `pennylane.numpy`.** Missed by every earlier pass of this plan. Breaks
+   `backend='jax'` training completely (`TracerArrayConversionError` once tracing reaches
+   `VQC_cost`) despite the QNode/circuit-construction layer working correctly on its own. Fix
+   (user-approved): switch `reshape`/`mean`/`array`/`shape` to `qml.math.*`, add one explicit
+   interface branch for `logaddexp` only (`qml.math.logaddexp` itself is unreliable under tracing
+   for either interface in this PennyLane version). See section 4 for the full writeup. Treat this
+   as equally load-bearing as risk 0 below — both are silent-failure-mode gaps in the original
+   plan, not implementation bugs.
+2. **JAX version drift breaking PennyLane's jax interface silently** (section 2). Pin
    `jax==0.10.2` in the new env; add a one-line runtime assertion or test that fails loudly if a
    future `pip install -U` moves it past 0.10.x, since the failure mode without jit/adjoint is a
    silent partial success (plain backprop still works) followed by a confusing crash later when
