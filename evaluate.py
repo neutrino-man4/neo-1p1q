@@ -28,12 +28,12 @@ from helpers.config import SINGLE_THREAD_ENV, parse_evaluation_args, run_directo
 from helpers.trained_run import CIRCUIT_FILES, load_trained_run
 
 
-def _plot_score_distribution(scores: np.ndarray, labels: np.ndarray, path: str) -> None:
+def _plot_score_distribution(scores: np.ndarray, labels: np.ndarray, path: str, xlabel: str) -> None:
     """Save a signal-vs-background classifier score histogram to path."""
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.hist(scores[labels == 1], bins=30, alpha=0.5, density=True, label='signal')
     ax.hist(scores[labels == 0], bins=30, alpha=0.5, density=True, label='background')
-    ax.set_xlabel('Classifier score', size=16)
+    ax.set_xlabel(xlabel, size=16)
     ax.set_ylabel('Density', size=16)
     ax.legend(prop={'size': 14})
     fig.savefig(path)
@@ -105,7 +105,10 @@ def main(config_path: str) -> dict[str, object]:
     logger.info(f"Saved ROC curve to {os.path.join(plot_dir, 'roc_curve.png')}")
 
     score_dist_path = os.path.join(plot_dir, 'score_distribution.png')
-    _plot_score_distribution(scores, labels, score_dist_path)
+    is_logits = cfg.loss == 'BCE'
+    probabilities = ut.sigmoid(scores) if is_logits else scores
+    xlabel = 'Predicted probability' if is_logits else 'Classifier score'
+    _plot_score_distribution(probabilities, labels, score_dist_path, xlabel)
     logger.info(f"Saved score distribution to {score_dist_path}")
     return results
 

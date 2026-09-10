@@ -1,5 +1,10 @@
 import pickle,os
 import numpy as nnp
+
+def sigmoid(x: nnp.ndarray) -> nnp.ndarray:
+    """Map real-valued logits to probabilities."""
+    return 1 / (1 + nnp.exp(-x))
+
 def getIndex(which:str='particle',feat:str=None)->int:
     if which=='particle':
         nameArray=particleFeatureNames

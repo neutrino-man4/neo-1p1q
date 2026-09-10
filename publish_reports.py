@@ -20,6 +20,8 @@ import numpy as np
 from omegaconf import OmegaConf
 from sklearn.metrics import roc_auc_score, roc_curve
 
+import helpers.utils as ut
+
 
 SCHEMA_VERSION = 1
 ROC_GRID = np.linspace(0.0, 1.0, 1001)
@@ -85,8 +87,13 @@ def _training_metadata(path: Path) -> tuple[int | None, str | None]:
     return completed, stop_reason
 
 
-def _score_histogram(scores: np.ndarray, labels: np.ndarray, bins: int = 30) -> dict[str, list[float]]:
-    """Bin classifier scores into a signal/background density histogram."""
+def _score_histogram(
+    scores: np.ndarray, labels: np.ndarray, is_logits: bool, bins: int = 30,
+) -> dict[str, list[float]]:
+    """Bin classifier scores (converted to probabilities if they are logits) into a
+    signal/background density histogram."""
+    if is_logits:
+        scores = ut.sigmoid(scores)
     edges = np.histogram_bin_edges(scores, bins=bins)
     signal_density, _ = np.histogram(scores[labels == 1.0], bins=edges, density=True)
     background_density, _ = np.histogram(scores[labels == 0.0], bins=edges, density=True)
@@ -97,8 +104,12 @@ def _score_histogram(scores: np.ndarray, labels: np.ndarray, bins: int = 30) -> 
     }
 
 
-def _roc_data(path: Path) -> tuple[float, int, list[dict[str, float]], dict[str, list[float]]]:
-    """Recompute AUC, ROC points, and a score histogram from saved labels and classifier scores."""
+def _roc_data(
+    path: Path, is_logits: bool,
+) -> tuple[float, int, list[dict[str, float]], dict[str, list[float]]]:
+    """Recompute AUC, ROC points, and a score histogram from saved labels and classifier
+    scores. AUC and ROC are invariant to the logit-to-probability conversion, since it is
+    monotonic; only the histogram is affected."""
     result = _load_pickle(path)
     if not isinstance(result, dict) or not {"scores", "labels"} <= result.keys():
         raise ValueError("evaluation result does not contain scores and labels")
@@ -117,7 +128,7 @@ def _roc_data(path: Path) -> tuple[float, int, list[dict[str, float]], dict[str,
         {"fpr": float(grid_value), "tpr": float(tpr_value)}
         for grid_value, tpr_value in zip(ROC_GRID, interpolated_tpr)
     ]
-    histogram = _score_histogram(scores, labels)
+    histogram = _score_histogram(scores, labels, is_logits)
     return auc, len(labels), points, histogram
 
 
@@ -301,7 +312,8 @@ def _run_report(run_dir: Path, result_dir: Path) -> tuple[dict[str, Any], dict[s
     result_path = result_dir / "test_results.pickle"
     if result_path.is_file():
         try:
-            test_auc, evaluation_jets, roc_points, score_histogram = _roc_data(result_path)
+            is_logits = isinstance(cfg, dict) and cfg.get("loss") == "BCE"
+            test_auc, evaluation_jets, roc_points, score_histogram = _roc_data(result_path, is_logits)
         except Exception:
             notices.append(_notice("Evaluation result is malformed."))
     else:

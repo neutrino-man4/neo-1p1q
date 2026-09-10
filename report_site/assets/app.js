@@ -187,9 +187,10 @@ function renderReport(data) {
   setupChartToggle("roc", (mode) => renderRocPlot(data.roc ?? {}, mode));
 
   const distributionRuns = sortedRuns(data.score_distribution?.runs);
+  const scoreAxisTitle = data.config?.optimization?.loss === "BCE" ? "Predicted probability" : "Classifier score";
   if (distributionRuns.length) {
-    renderScoreDistributionPlot(distributionRuns, distributionRuns[0].random_seed);
-    setupSeedToggle("score-seed-selector", (seed) => renderScoreDistributionPlot(distributionRuns, seed));
+    renderScoreDistributionPlot(distributionRuns, distributionRuns[0].random_seed, scoreAxisTitle);
+    setupSeedToggle("score-seed-selector", (seed) => renderScoreDistributionPlot(distributionRuns, seed, scoreAxisTitle));
   }
 }
 
@@ -343,7 +344,7 @@ function renderScoreDistributionCard(scoreDistribution) {
     </div>`;
 }
 
-function renderScoreDistributionPlot(runs, seed) {
+function renderScoreDistributionPlot(runs, seed, axisTitle) {
   const target = document.querySelector("#score-chart");
   if (!window.Plotly) {
     renderChartError(target, "Plotly could not be loaded.");
@@ -358,16 +359,16 @@ function renderScoreDistributionPlot(runs, seed) {
     {
       x: centers, y: run.background_density, type: "bar", name: "Background",
       marker: { color: "#e0916a" }, opacity: 0.6, width,
-      hovertemplate: "Score %{x:.4f}<br>Background density %{y:.4f}<extra></extra>",
+      hovertemplate: `${safeText(axisTitle)} %{x:.4f}<br>Background density %{y:.4f}<extra></extra>`,
     },
     {
       x: centers, y: run.signal_density, type: "bar", name: "Signal",
       marker: { color: "#7fb1e0" }, opacity: 0.6, width,
-      hovertemplate: "Score %{x:.4f}<br>Signal density %{y:.4f}<extra></extra>",
+      hovertemplate: `${safeText(axisTitle)} %{x:.4f}<br>Signal density %{y:.4f}<extra></extra>`,
     },
   ] : [];
   drawPlot(target, traces, {
-    xaxis: { title: "Classifier score" },
+    xaxis: { title: axisTitle },
     yaxis: { title: "Density" },
     barmode: "overlay",
     showlegend: true,

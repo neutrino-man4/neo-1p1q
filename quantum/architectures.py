@@ -575,10 +575,12 @@ class QuantumTrainer:
             epoch_progress.set_postfix(epoch_metrics)
             
             if self.wandb is not None:
+                is_logits = self.loss_type == 'BCE'
+                val_probability = ut.sigmoid(val_score) if is_logits else val_score
                 fig, ax = plt.subplots(figsize=(8, 8))
-                ax.hist(val_score[val_labels == 1], bins=30, alpha=0.5, density=True, label='signal')
-                ax.hist(val_score[val_labels == 0], bins=30, alpha=0.5, density=True, label='background')
-                ax.set_xlabel('Classifier score', size=16)
+                ax.hist(val_probability[val_labels == 1], bins=30, alpha=0.5, density=True, label='signal')
+                ax.hist(val_probability[val_labels == 0], bins=30, alpha=0.5, density=True, label='background')
+                ax.set_xlabel('Predicted probability' if is_logits else 'Classifier score', size=16)
                 ax.set_ylabel('Density', size=16)
                 ax.legend(prop={'size': 14})
                 self.wandb.log({
