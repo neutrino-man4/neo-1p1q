@@ -313,7 +313,6 @@ function drawPlot(target, traces, axes, emptyMessage) {
     renderChartError(target, emptyMessage);
     return;
   }
-  target.replaceChildren();
   const layout = {
     ...axes,
     autosize: true,
@@ -336,6 +335,9 @@ function drawPlot(target, traces, axes, emptyMessage) {
 }
 
 function renderChartError(target, message) {
+  if (window.Plotly && target.data) {
+    window.Plotly.purge(target);
+  }
   target.innerHTML = `<div class="empty-state"><p>${safeText(message)}</p></div>`;
 }
 
