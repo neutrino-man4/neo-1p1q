@@ -229,6 +229,31 @@ Other notes:
   `qml.AdamOptimizer`, with a separate checkpoint schema — link to this plan file or fold a
   condensed version into `llm_summary.MD` once implemented).
 
+**`quantum/circuits/vqc.py` (found during implementation, second instance of the same bug class —
+added 2026-09-10)**
+- Section 2's claim that "no changes needed... to `CircuitBase`/`VQCCircuit` for the jax backend"
+  is wrong. `sigmoid()` (`vqc.py:16-18`) does `1 / (1 + pennylane.numpy.exp(-x))`, called on
+  `weights.aux['scale_factor']` inside `VQCCircuit.encode()`. This works with a *concrete* jax
+  array (which is why the earlier golden-value/Hamiltonian-gradient tests missed it —
+  `scale_factor` was held fixed, never differentiated, in those tests) but raises
+  `TracerArrayConversionError` the moment `scale_factor` is an abstract tracer under
+  `jax.grad`/`jax.value_and_grad`, which real training always does (the full params pytree,
+  `scale_factor` included, is differentiated).
+- **Verified fix, same pattern as the `logaddexp` fix above:** `qml.math.exp` is also unreliable
+  under tracing for either interface in this PennyLane version (confirmed:
+  `AttributeError: 'ArrayBox' object has no attribute 'exp'` under plain autograd). Add the same
+  explicit interface branch inside `sigmoid()` — `jax.numpy.exp` vs `pennylane.numpy.exp`
+  (unchanged) based on `qml.math.get_interface(x) == 'jax'`.
+- A full sweep of `quantum/circuits/*.py`, `quantum/losses.py`, and `quantum/math_functions.py` for
+  other `pennylane.numpy` call sites (not just type annotations) found no further instances:
+  `base.py` only uses `np.ndarray` as a type annotation (no calls); `vqc.py`'s `rotate()`/
+  `measure()`/`entangle()` only do plain indexing/`len()`, which work on any array type; the
+  remaining `np.array(...)` calls in `losses.py` are confined to `semi_classical_cost`/
+  `batch_semi_classical_cost`/`batched_VQC_cost`, already out of scope (legacy/unused, per
+  `llm_summary.MD`). **Take section 2's original "no changes needed" claims for `CircuitBase`/
+  `VQCCircuit`/`broadcast_expand` as superseded by this entry — this is now the authoritative
+  statement of what in the circuit layer needed changes and what didn't.**
+
 **`quantum/architectures.py`**
 - `QuantumClassifier.set_circuit()` (~line 202-221): add validation raising `ValueError` when
   `self.backend == 'jax' and self.device.shots is not None` (or however finite shots are exposed
