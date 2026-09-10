@@ -98,6 +98,10 @@ class TestSetCircuitDiffMethodValidation(unittest.TestCase):
         qc.set_circuit('normal', diff_method='parameter-shift')
         self.assertIsNotNone(qc.circuit)
 
+@unittest.skipUnless(_HAS_JAX, 'jax is not installed in this environment')
+class TestJaxBackendParity(unittest.TestCase):
+    """backend='jax' must reproduce the same analytic physics as backend='autograd'."""
+
     def test_jax_backend_with_finite_shots_is_rejected(self) -> None:
         qc = arch.QuantumClassifier(
             wires=2, layers=1, shots=50, dev_name='default.qubit', backend_name='jax',
@@ -107,11 +111,6 @@ class TestSetCircuitDiffMethodValidation(unittest.TestCase):
         message = str(context.exception)
         self.assertIn('jax', message)
         self.assertIn('analytic', message)
-
-
-@unittest.skipUnless(_HAS_JAX, 'jax is not installed in this environment')
-class TestJaxBackendParity(unittest.TestCase):
-    """backend='jax' must reproduce the same analytic physics as backend='autograd'."""
 
     def setUp(self) -> None:
         onp.random.seed(0)
