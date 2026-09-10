@@ -26,9 +26,8 @@ class VQCCircuit(CircuitBase):
     """
 
     operations_per_qubit = 3  # RZ, RY, RX per wire per layer
-    aux_defaults = {'scale_factor': 1.0, 'bias': 0.1}
-    # 'hamiltonian_coeffs' has no static default here -- its length depends on
-    # qubit count, resolved in measure() below.
+    aux_defaults = {'scale_factor': 1.0, 'bias': 0.1, 'hamiltonian_coeffs': 0.1}
+    aux_per_wire_names = ('hamiltonian_coeffs',)  # one independent trainable coefficient per wire
 
     def __init__(self, num_layers: int) -> None:
         self.num_layers = num_layers
@@ -62,7 +61,7 @@ class VQCCircuit(CircuitBase):
 
     def measure(self, weights: CircuitWeights, wires: List[int]) -> qml.measurements.ExpectationMP:
         obs = [qml.PauliZ(i) for i in wires]
-        coeffs = weights.aux.get('hamiltonian_coeffs', [0.1] * len(wires))
+        coeffs = weights.aux['hamiltonian_coeffs']
         if len(coeffs) != len(wires):
             raise ValueError(
                 f"hamiltonian_coeffs has {len(coeffs)} entries, circuit has {len(wires)} wires"
