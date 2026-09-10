@@ -24,7 +24,7 @@ conda run -n pennylane-gpu-sep2026 python --version
 conda run -n pennylane-gpu-sep2026 python -m unittest discover -s tests -q
 ```
 
-`requirements.txt` contains lower bounds for direct runtime dependencies. It is an installation list rather than an exact environment lock. The default simulator is `default.qubit` (backprop-capable, needed to train `aux_weights.hamiltonian_coeffs`); `lightning.qubit` is faster but its adjoint differentiation freezes `hamiltonian_coeffs`.
+`requirements.txt` contains lower bounds for direct runtime dependencies. It is an installation list rather than an exact environment lock. The default simulator is `lightning.qubit`. Every QNode is built with `diff_method='parameter-shift'` (see `QuantumClassifier.set_circuit()`), not the device's default `best` (which resolves to adjoint on `lightning.qubit` and cannot differentiate Hamiltonian coefficients -- see below).
 
 Training initializes Weights & Biases even when no online account is wanted. Set offline mode for local work:
 
@@ -191,7 +191,7 @@ For the maintained `VQCCircuit`:
 - The trainable scale is `2 * pi * sigmoid(aux_weights.scale_factor) + 1`.
 - Entanglement is a CNOT ring from each wire to the next, with the last wire connected to wire 0.
 - Trainable gates are `Rot(0, ry, rz)` followed by `RX(rx)` on each wire.
-- Measurement is the expectation value of a Hamiltonian containing one Pauli Z term per wire. Each wire's coefficient is independently trainable, all starting from `aux_weights.hamiltonian_coeffs` (default 0.1). This requires a backprop-capable device: PennyLane's adjoint differentiation (the default for `lightning.qubit`) cannot differentiate Hamiltonian/observable coefficients and silently returns a zero gradient for them, freezing `hamiltonian_coeffs` at its initial value while `rot`/`scale_factor`/`bias` still train normally. `configs/base.yaml` therefore defaults `device_name` to `default.qubit` (backprop-capable), not `lightning.qubit`.
+- Measurement is the expectation value of a Hamiltonian containing one Pauli Z term per wire. Each wire's coefficient is independently trainable, all starting from `aux_weights.hamiltonian_coeffs` (default 0.1). This requires a differentiation method that supports Hamiltonian/observable coefficients: PennyLane's adjoint method (the default `best` resolution for `lightning.qubit`) cannot differentiate them and silently returns a zero gradient, freezing `hamiltonian_coeffs` at its initial value while `rot`/`scale_factor`/`bias` still train normally. `parameter-shift` does not have this limitation -- a coefficient's gradient is just the expectation value of its own Pauli term, no gate shifting needed -- so every QNode is built with `diff_method='parameter-shift'` explicitly (verified directly: nonzero, independent per-wire gradients on `lightning.qubit`).
 
 `CircuitWeights` separates parameters into:
 
