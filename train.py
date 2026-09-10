@@ -35,7 +35,10 @@ from helpers.trained_run import (
     validate_weights,
 )
 from loguru import logger
+from dotenv import load_dotenv
 import wandb
+
+load_dotenv()
 
 
 def main(cfg: DictConfig):
@@ -78,7 +81,13 @@ def main(cfg: DictConfig):
     wandb_config = OmegaConf.to_container(cfg)
     for path_key in ('data_dir', 'save_dir', 'dump'):
         wandb_config.pop(path_key, None)
-    wandb.init(project="neo1P1Q", config=wandb_config, name=run_str, notes=cfg.desc)
+    wandb.init(
+        entity="aritrabal2-Karlsruhe Institute of Technology",
+        project="neo1P1Q",
+        config=wandb_config,
+        name=run_str,
+        notes=cfg.desc,
+    )
     with open(os.path.join(save_dir, "wandb_run_id.txt"), "w") as f:
         f.write(wandb.run.id)
 
