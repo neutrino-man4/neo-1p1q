@@ -1,8 +1,8 @@
 """
-Launch repeated training runs with consecutive random seeds and bounded parallelism.
+Launch repeated training runs with randomly generated seeds and bounded parallelism.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-09
+Date: 2026-09-10
 """
 
 import argparse
@@ -15,6 +15,7 @@ import tempfile
 import time
 from typing import Sequence
 
+import numpy as np
 from omegaconf import OmegaConf
 
 from helpers.config import (
@@ -27,10 +28,24 @@ from helpers.config import (
     validate_training_config,
 )
 
+_RANDOM_SEED_HIGH = 2 ** 31  # Keeps generated seeds within the non-negative int32 range.
+
+
+def _generate_random_seeds(count: int) -> list[int]:
+    """Draw ``count`` distinct random seeds with NumPy's default generator."""
+    rng = np.random.default_rng()
+    seeds: list[int] = []
+    while len(seeds) < count:
+        candidate = int(rng.integers(0, _RANDOM_SEED_HIGH))
+        if candidate not in seeds:
+            seeds.append(candidate)
+    return seeds
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse launcher settings separately from training overrides."""
     parser = argparse.ArgumentParser(
-        description='Launch repeated training runs with consecutive random seeds.'
+        description='Launch repeated training runs with randomly generated seeds.'
     )
     parser.add_argument(
         '--config', default=DEFAULT_CONFIG,
@@ -40,7 +55,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--num-cores', type=positive_integer, default=1)
     parser.add_argument(
         'overrides', nargs='*',
-        help='training overrides, e.g. seed=experiment epochs=5 random_seed=42',
+        help='training overrides, e.g. seed=experiment epochs=5 (random_seed is generated per run)',
     )
     return parser.parse_args(argv)
 
@@ -126,16 +141,20 @@ def launch_runs(config_path: str, random_seeds: Sequence[int], num_cores: int) -
 def main(argv: Sequence[str] | None = None) -> int:
     """Resolve one experiment and launch its requested independent runs."""
     args = _parse_args(argv)
+    if any(override.split('=', 1)[0] == 'random_seed' for override in args.overrides):
+        raise ValueError(
+            'random_seed is generated per run by run_experiments.py and must not be overridden; '
+            'set it directly with train.py instead.'
+        )
     cfg = load_config_values(args.config, args.overrides)
     cfg = OmegaConf.create(
         OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
     )
-    random_seed = validate_training_config(cfg, require_random_seed=True)
+    validate_training_config(cfg)
     if cfg.get('resume', False):
         raise ValueError('run_experiments.py only launches fresh runs; resume runs individually.')
 
-    last_random_seed = random_seed + args.number_of_runs - 1
-    random_seeds = list(range(random_seed, last_random_seed + 1))
+    random_seeds = _generate_random_seeds(args.number_of_runs)
 
     legacy_config = run_directory(cfg.save_dir, cfg.seed) / 'config.yaml'
     if legacy_config.exists():
