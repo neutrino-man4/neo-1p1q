@@ -7,7 +7,7 @@ here with OmegaConf directly -- no Hydra. `cfg` stays a DictConfig, so the dot
 and bracket access the rest of the code relies on is unchanged.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-09
+Date: 2026-09-10
 """
 import argparse
 import os
@@ -51,6 +51,15 @@ def validate_training_config(cfg: DictConfig, require_random_seed: bool = False)
         raise ValueError(
             f"{', '.join(misplaced)} are launcher options and must not be in a training config."
         )
+    min_epochs = cfg.get('min_epochs')
+    decay_patience = cfg.get('decay_patience')
+    decay_rate = cfg.get('decay_rate')
+    if type(min_epochs) is not int or min_epochs < 1:
+        raise ValueError('min_epochs must be an integer greater than or equal to 1.')
+    if type(decay_patience) is not int or decay_patience < 1:
+        raise ValueError('decay_patience must be an integer greater than or equal to 1.')
+    if type(decay_rate) not in (int, float) or not 0 < decay_rate < 1:
+        raise ValueError('decay_rate must be greater than 0 and less than 1.')
     if 'random_seed' not in cfg or cfg.random_seed is None:
         if require_random_seed:
             raise ValueError('New training runs require an integer random_seed.')

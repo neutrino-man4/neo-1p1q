@@ -115,8 +115,9 @@ These entries define the circuit and weight shapes. Changing them when evaluatin
 | `lr` | Initial Adam learning rate. |
 | `loss` | Classifier loss. Supported values are `MSE` and `BCE`. |
 | `improv` | Minimum validation AUC improvement required by the stopping logic after its initial warmup. |
-| `lr_decay` | Halves the learning rate after insufficient improvement when `true`. When `false`, insufficient improvement stops training. |
-| `patience` | Maximum number of learning rate reductions before early stopping when `lr_decay=true`. |
+| `min_epochs` | Minimum number of training epochs completed before learning-rate decay or early stopping. |
+| `decay_rate` | Factor applied to the Adam learning rate after insufficient improvement. |
+| `decay_patience` | Number of learning-rate reductions allowed before early stopping. |
 
 ## Saved configurations
 

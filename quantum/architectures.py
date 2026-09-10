@@ -2,7 +2,7 @@
 Configure quantum classifiers and manage training, inference, and checkpoints.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-09
+Date: 2026-09-10
 """
 
 # pylint: disable=maybe-no-member
@@ -321,10 +321,11 @@ class QuantumTrainer:
         train_max_n: Maximum number of training samples
         valid_max_n: Maximum number of validation samples  
         epochs: Number of training epochs
-        patience: Patience for early stopping
         improv: Minimum improvement threshold for early stopping
+        min_epochs: Minimum number of training epochs before learning-rate decay
+        decay_rate: Factor applied to the learning rate after insufficient improvement
+        decay_patience: Number of learning-rate reductions allowed before early stopping
         wandb: Weights & Biases logger instance
-        lr_decay: Whether to apply learning rate decay
         loss_type: Type of loss function ('BCE', etc.)
         checkpoint_config: Resolved run configuration stored in each checkpoint
         circuit_signature: Saved circuit fingerprints stored in each checkpoint
@@ -341,10 +342,11 @@ class QuantumTrainer:
         train_max_n: int = 10000,
         valid_max_n: int = 2000,
         epochs: int = 20,
-        patience: int = 2,
         improv: float = 0.01,
+        min_epochs: int = 10,
+        decay_rate: float = 0.5,
+        decay_patience: int = 3,
         wandb: Optional[Any] = None,
-        lr_decay: bool = False,
         loss_type: str = 'MSE',
         checkpoint_config: Optional[Dict[str, Any]] = None,
         circuit_signature: Optional[Dict[str, str]] = None,
@@ -362,9 +364,10 @@ class QuantumTrainer:
         # Training configuration
         self.train_max_n = train_max_n
         self.valid_max_n = valid_max_n
-        self.lr_decay = lr_decay
         self.epochs = epochs
-        self.patience = patience
+        self.min_epochs = min_epochs
+        self.decay_rate = decay_rate
+        self.decay_patience = decay_patience
         self.saving = save
         self.loss_type = loss_type
         self.improv = improv
@@ -380,7 +383,6 @@ class QuantumTrainer:
         self.quantum_loss = loss_fn
         self.history: Dict[str, List[float]] = {'train': [], 'val': [], 'auc': []}
         self.n_decays = 0
-        self.last_decay = 0
         
         # Directories (to be set later)
         self.save_dir: Optional[str] = None
@@ -481,32 +483,24 @@ class QuantumTrainer:
             self.current_epoch = n_epoch
             losses = 0.0
             
-            # Early stopping logic
-            if n_epoch > 4:
+            # Allow the configured minimum training period before decay or stopping.
+            if n_epoch > self.min_epochs and len(self.history['auc']) >= 3:
                 recent_val_metrics = self.history['auc'][-2:]
                 previous_val_metric = self.history['auc'][-3]
                 improvement = np.mean(recent_val_metrics) - previous_val_metric
                 
                 if improvement < self.improv:
-                    if self.lr_decay:
-                        if (self.n_decays < self.patience) and ((n_epoch - self.last_decay) >= 2):
-                            self.last_decay = self.current_epoch
-                            self.n_decays += 1
-                            self.optim.stepsize *= 0.5
-                            self.logger.info(
-                                f'No improvement observed over last 3 epochs. \n'
-                                f'Learning rate decayed to {self.optim.stepsize} at epoch {n_epoch}'
-                            )
-                        elif self.n_decays >= self.patience:
-                            self.logger.info(
-                                f"\n\nNo improvement over last 3 epochs and {self.patience} "
-                                f"decay steps. Early stopping!\n\n"
-                            )
-                            complete = True
-                            break
+                    if self.n_decays < self.decay_patience:
+                        self.n_decays += 1
+                        self.optim.stepsize *= self.decay_rate
+                        self.logger.info(
+                            f'No improvement observed over last 3 epochs. \n'
+                            f'Learning rate decayed to {self.optim.stepsize} at epoch {n_epoch}'
+                        )
                     else:
                         self.logger.info(
-                            "\n\nNo improvement over last 3 epochs. Early stopping!\n\n"
+                            f"\n\nNo improvement over last 3 epochs and {self.decay_patience} "
+                            f"decay steps. Early stopping!\n\n"
                         )
                         complete = True
                         break
@@ -661,7 +655,6 @@ class QuantumTrainer:
                 'completed_epoch': self.current_epoch,
                 'history': self.history,
                 'n_decays': self.n_decays,
-                'last_decay': self.last_decay,
             },
         }
         path = pathlib.Path(self.checkpoint_dir) / f'ep{self.current_epoch:04d}.pickle'
@@ -683,7 +676,6 @@ class QuantumTrainer:
         self.optim.accumulation = optimizer['accumulation']
         self.history = training['history']
         self.n_decays = training.get('n_decays', 0)
-        self.last_decay = training.get('last_decay', 0)
         self.current_epoch = training['completed_epoch'] + 1
     
     def set_directories(self, save_dir: str) -> None:

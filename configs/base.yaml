@@ -32,9 +32,10 @@ aux_weights:
 batch_size: 100
 epochs: 25
 lr: 0.05
-lr_decay: false
 improv: 0.01
-patience: 2
+min_epochs: 10
+decay_rate: 0.5
+decay_patience: 3
 loss: 'MSE'
 
 # Run control

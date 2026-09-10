@@ -4,7 +4,7 @@ save the exact merged config to one reusable file. These tests pin the round
 trip that matters -- a run's config.yaml must reload identically and be usable
 as the --config for a later run.
 Author: Aritra Bal (ETP)
-Date: 2026-09-09
+Date: 2026-09-10
 """
 import os
 from pathlib import Path
@@ -38,6 +38,11 @@ class TestLoadConfig(unittest.TestCase):
         base = OmegaConf.load(_BASE)
         self.assertEqual(cfg, base)
         self.assertEqual(cfg.random_seed, 42)
+        self.assertEqual(cfg.min_epochs, 10)
+        self.assertEqual(cfg.decay_rate, 0.5)
+        self.assertEqual(cfg.decay_patience, 3)
+        self.assertNotIn('lr_decay', cfg)
+        self.assertNotIn('patience', cfg)
 
     def test_typed_and_nested_overrides(self):
         cfg = self._run(['epochs=7', 'save=false', 'aux_weights.scale_factor=2.5', 'n_signal=40'])
@@ -88,6 +93,18 @@ class TestLoadConfig(unittest.TestCase):
             with self.subTest(key=key):
                 cfg = self._run([f'{key}=2'])
                 with self.assertRaisesRegex(ValueError, 'launcher options'):
+                    validate_training_config(cfg)
+
+    def test_stopping_settings_are_validated(self):
+        invalid = {
+            'min_epochs': 0,
+            'decay_rate': 1.0,
+            'decay_patience': 0,
+        }
+        for key, value in invalid.items():
+            with self.subTest(key=key):
+                cfg = self._run([f'{key}={value}'])
+                with self.assertRaisesRegex(ValueError, key):
                     validate_training_config(cfg)
 
 

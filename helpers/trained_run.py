@@ -2,7 +2,7 @@
 Save and verify the configuration, implementation, and final weights of a run.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-09
+Date: 2026-09-10
 """
 
 import hashlib
@@ -128,7 +128,7 @@ def load_training_checkpoint(
     history = training.get('history')
     if not isinstance(history, dict) or any(key not in history for key in ('train', 'val', 'auc')):
         raise ValueError(f'Checkpoint {path} has incomplete training history.')
-    if any(type(training.get(key)) is not int for key in ('n_decays', 'last_decay')):
+    if type(training.get('n_decays')) is not int:
         raise ValueError(f'Checkpoint {path} has incomplete learning-rate state.')
     if (len(history['train']) != completed_epoch
             or len(history['val']) != completed_epoch + 1

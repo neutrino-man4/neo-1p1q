@@ -3,7 +3,7 @@ End-to-end validation of training, checkpoint resume, and inference.
 
 Includes regression tests for the training, validation, and inference paths.
 Author: Aritra Bal (ETP)
-Date: 2026-09-09
+Date: 2026-09-10
 """
 import os
 from pathlib import Path
@@ -214,6 +214,30 @@ class TestFullTrainingLoop(unittest.TestCase):
                 sorted(os.listdir(checkpoint_dir)),
                 ['ep0000.pickle', 'ep0001.pickle', 'ep0002.pickle'],
             )
+
+    def test_decay_after_minimum_epochs_then_early_stop(self) -> None:
+        """Three failed post-warmup checks decay Adam before stopping training."""
+        with tempfile.TemporaryDirectory() as save_dir:
+            _, trainer = _build_trainer(save_dir, batch_size=1, epochs=30)
+            trainer.saving = False
+            trainer.min_epochs = 10
+            trainer.decay_rate = 0.5
+            trainer.decay_patience = 3
+
+            def constant_iteration(
+                data: np.ndarray, labels: np.ndarray, train: bool = False,
+            ) -> float | tuple[float, np.ndarray]:
+                if train:
+                    return 0.25
+                return 0.25, np.full(len(labels), 0.5)
+
+            trainer.iteration = constant_iteration
+            batches = _make_batches(2, batch_size=1, n_qubits=4, n_layers=1)
+            history = trainer.run_training_loop(batches, batches)
+
+            self.assertEqual(len(history['train']), 13)
+            self.assertEqual(trainer.n_decays, 3)
+            self.assertAlmostEqual(trainer.optim.stepsize, 0.05 * 0.5**3)
 
     def test_checkpoint_round_trip_and_resume_training(self) -> None:
         """A resumed Adam step must match an uninterrupted step exactly."""

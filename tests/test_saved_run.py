@@ -2,7 +2,7 @@
 Verify saved configuration, circuit reconstruction, and final-weight provenance.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-09
+Date: 2026-09-10
 """
 
 import contextlib
@@ -73,7 +73,7 @@ class TestSavedRun(unittest.TestCase):
                 'implementation': implementation_signature(self.circuit_dir),
                 'completed_epoch': 0,
                 'history': {'train': [], 'val': [0.5], 'auc': [0.5]},
-                'n_decays': 0, 'last_decay': 0,
+                'n_decays': 0,
             },
         }
 

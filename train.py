@@ -2,7 +2,7 @@
 Train a quantum classifier and save its resolved configuration and final weights.
 
 Author: Aritra Bal (ETP)
-Date: 2026-09-09
+Date: 2026-09-10
 """
 
 from omegaconf import DictConfig, OmegaConf
@@ -216,10 +216,11 @@ def main(cfg: DictConfig):
         train_max_n=train_max_n,
         valid_max_n=valid_max_n,
         epochs=cfg.epochs,
-        patience=cfg.patience,
         improv=cfg.improv,
+        min_epochs=cfg.min_epochs,
+        decay_rate=cfg.decay_rate,
+        decay_patience=cfg.decay_patience,
         wandb=wandb,
-        lr_decay=cfg.lr_decay,
         loss_type=cfg.loss,
         checkpoint_config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
         circuit_signature=signature,

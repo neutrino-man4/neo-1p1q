@@ -209,7 +209,7 @@ The default `operations_per_qubit` is 3 and matches the RZ, RY, and RX parameter
 
 Losses are averaged by sample count, so a smaller final batch receives the correct weight. Validation history and AUC include epoch 0; training history starts at epoch 1.
 
-After epoch 4, early stopping uses recent validation AUC. With `lr_decay=false`, insufficient improvement stops training. With `lr_decay=true`, the Adam step size is halved, up to the configured `patience`, before stopping.
+After `min_epochs` training epochs, insufficient recent validation AUC improvement multiplies the Adam step size by `decay_rate`. Training stops only when another insufficient-improvement check occurs after `decay_patience` reductions.
 
 A keyboard interrupt during the training loop writes `aborted_weights.pickle`, enters the normal cleanup block, and then exits unsuccessfully. It does not create a certified `trained_model.pickle`.
 
@@ -249,7 +249,7 @@ weights:
 optimizer:
   name, stepsize, beta1, beta2, eps, accumulation
 training:
-  config, implementation, completed_epoch, history, n_decays, last_decay
+  config, implementation, completed_epoch, history, n_decays
 ```
 
 `implementation` is a mapping from each saved circuit filename to its SHA-256 digest. Checkpoints are written to a temporary file and atomically renamed.
