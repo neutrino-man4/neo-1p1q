@@ -4,20 +4,20 @@ random_seed: 42
 # JetClass data and outputs
 signal: 'TTBar_'
 background: 'ZJetsToNuNu'
-n_signal: 1000
-n_background: 1000
-n_signal_val: 200
-n_background_val: 200
-n_signal_test: 2000
-n_background_test: 2000
-flat: false
+n_signal: 10000
+n_background: 10000
+n_signal_val: 2000
+n_background_val: 2000
+n_signal_test: 20000
+n_background_test: 20000
+flat: true
 norm_pt: true
-data_dir: './data/JetClass'
+data_dir: '/ceph/abal/JetClass'
 save_dir: './saved_models'
-dump: './results'
+dump: '/ceph/abal/Neo1P1Q/results'
 
 # Circuit
-wires: 4
+wires: 10
 num_layers: 1
 shots: -1
 backend: 'autograd'
@@ -37,7 +37,7 @@ improv: 0.01
 min_epochs: 10
 decay_rate: 0.5
 decay_patience: 3
-loss: 'MSE'
+loss: 'BCE'
 
 # Run control
 save: true
