@@ -14,6 +14,9 @@ import subprocess
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import pennylane as qml
 import pennylane.numpy as np
 from sklearn.metrics import roc_auc_score
@@ -572,7 +575,18 @@ class QuantumTrainer:
             epoch_progress.set_postfix(epoch_metrics)
             
             if self.wandb is not None:
-                self.wandb.log({'val_loss': val_loss, 'val_auc': val_auc})
+                fig, ax = plt.subplots(figsize=(8, 8))
+                ax.hist(val_score[val_labels == 1], bins=30, alpha=0.5, density=True, label='signal')
+                ax.hist(val_score[val_labels == 0], bins=30, alpha=0.5, density=True, label='background')
+                ax.set_xlabel('Classifier score', size=16)
+                ax.set_ylabel('Density', size=16)
+                ax.legend(prop={'size': 14})
+                self.wandb.log({
+                    'val_loss': val_loss,
+                    'val_auc': val_auc,
+                    'score_distribution': self.wandb.Image(fig),
+                })
+                plt.close(fig)
             
             # Logging
             if n_epoch > 0:
