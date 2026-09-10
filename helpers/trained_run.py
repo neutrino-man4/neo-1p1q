@@ -95,6 +95,55 @@ def latest_checkpoint(run_dir: str | Path) -> Path:
     return max(checkpoints, key=lambda item: item[0])[1]
 
 
+def _validate_adam_optimizer_state(optimizer: dict, path: Path, completed_epoch: int) -> None:
+    """Validate a qml.AdamOptimizer checkpoint payload (autograd backend)."""
+    required_optimizer_fields = {'name', 'stepsize', 'beta1', 'beta2', 'eps', 'accumulation'}
+    if not required_optimizer_fields.issubset(optimizer):
+        raise ValueError(f'Checkpoint {path} has incomplete optimizer state.')
+    if not all(np.isfinite(optimizer[key]) for key in ('stepsize', 'beta1', 'beta2', 'eps')):
+        raise ValueError(f'Checkpoint {path} contains invalid optimizer settings.')
+    if (optimizer['stepsize'] <= 0 or optimizer['eps'] <= 0
+            or not 0 <= optimizer['beta1'] < 1 or not 0 <= optimizer['beta2'] < 1):
+        raise ValueError(f'Checkpoint {path} contains invalid Adam hyperparameters.')
+    accumulation = optimizer['accumulation']
+    if completed_epoch == 0:
+        if accumulation is not None:
+            raise ValueError(f'Checkpoint {path} has optimizer moments before training.')
+    elif (not isinstance(accumulation, dict)
+          or any(key not in accumulation for key in ('fm', 'sm', 't'))
+          or not isinstance(accumulation.get('fm'), (list, tuple))
+          or not isinstance(accumulation.get('sm'), (list, tuple))
+          or type(accumulation['t']) is not int
+          or accumulation['t'] < 1):
+        raise ValueError(f'Checkpoint {path} has invalid Adam accumulation state.')
+    if accumulation is not None:
+        moments = [*accumulation['fm'], *accumulation['sm']]
+        if not all(np.all(np.isfinite(moment)) for moment in moments):
+            raise ValueError(f'Checkpoint {path} contains nonfinite Adam moments.')
+
+
+def _validate_optax_optimizer_state(optimizer: dict, path: Path) -> None:
+    """Validate an optax.inject_hyperparams(optax.adam) checkpoint payload (jax backend).
+
+    optax's payload has a completely different field set from qml.AdamOptimizer's
+    (name/opt_state, not name/stepsize/beta1/.../accumulation), so this is a
+    separate validator rather than a branch inside the Adam one.
+    """
+    if not {'name', 'opt_state'}.issubset(optimizer):
+        raise ValueError(f'Checkpoint {path} has incomplete optimizer state.')
+    opt_state = optimizer['opt_state']
+    hyperparams = getattr(opt_state, 'hyperparams', None)
+    if not isinstance(hyperparams, dict) or 'learning_rate' not in hyperparams:
+        raise ValueError(f'Checkpoint {path} has invalid optax hyperparameters.')
+    learning_rate = hyperparams['learning_rate']
+    if not np.isfinite(learning_rate) or learning_rate <= 0:
+        raise ValueError(f'Checkpoint {path} contains an invalid optax learning rate.')
+    import jax
+    leaves = jax.tree_util.tree_leaves(opt_state)
+    if not leaves or not all(np.all(np.isfinite(leaf)) for leaf in leaves):
+        raise ValueError(f'Checkpoint {path} contains nonfinite optax optimizer state.')
+
+
 def load_training_checkpoint(
     run_dir: str | Path,
     cfg: DictConfig,
@@ -137,31 +186,13 @@ def load_training_checkpoint(
     if not all(np.all(np.isfinite(history[key])) for key in ('train', 'val', 'auc')):
         raise ValueError(f'Checkpoint {path} contains nonfinite training history.')
 
-    required_optimizer_fields = {'name', 'stepsize', 'beta1', 'beta2', 'eps', 'accumulation'}
-    if not required_optimizer_fields.issubset(optimizer):
-        raise ValueError(f'Checkpoint {path} has incomplete optimizer state.')
-    if optimizer['name'] != 'AdamOptimizer':
-        raise ValueError(f"Unsupported checkpoint optimizer: {optimizer['name']}.")
-    if not all(np.isfinite(optimizer[key]) for key in ('stepsize', 'beta1', 'beta2', 'eps')):
-        raise ValueError(f'Checkpoint {path} contains invalid optimizer settings.')
-    if (optimizer['stepsize'] <= 0 or optimizer['eps'] <= 0
-            or not 0 <= optimizer['beta1'] < 1 or not 0 <= optimizer['beta2'] < 1):
-        raise ValueError(f'Checkpoint {path} contains invalid Adam hyperparameters.')
-    accumulation = optimizer['accumulation']
-    if completed_epoch == 0:
-        if accumulation is not None:
-            raise ValueError(f'Checkpoint {path} has optimizer moments before training.')
-    elif (not isinstance(accumulation, dict)
-          or any(key not in accumulation for key in ('fm', 'sm', 't'))
-          or not isinstance(accumulation.get('fm'), (list, tuple))
-          or not isinstance(accumulation.get('sm'), (list, tuple))
-          or type(accumulation['t']) is not int
-          or accumulation['t'] < 1):
-        raise ValueError(f'Checkpoint {path} has invalid Adam accumulation state.')
-    if accumulation is not None:
-        moments = [*accumulation['fm'], *accumulation['sm']]
-        if not all(np.all(np.isfinite(moment)) for moment in moments):
-            raise ValueError(f'Checkpoint {path} contains nonfinite Adam moments.')
+    optimizer_name = optimizer.get('name')
+    if optimizer_name == 'AdamOptimizer':
+        _validate_adam_optimizer_state(optimizer, path, completed_epoch)
+    elif optimizer_name == 'optax_adam':
+        _validate_optax_optimizer_state(optimizer, path)
+    else:
+        raise ValueError(f'Unsupported checkpoint optimizer: {optimizer_name}.')
 
     if completed_epoch >= cfg.epochs:
         raise ValueError(
