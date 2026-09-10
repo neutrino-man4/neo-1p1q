@@ -20,6 +20,7 @@ from omegaconf import DictConfig, OmegaConf
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "configs", "base.yaml")
 ORCHESTRATION_KEYS = ('number_of_runs', 'num_cores')
+SUPPORTED_BACKENDS = ('autograd', 'jax')
 SINGLE_THREAD_ENV = {
     'OMP_NUM_THREADS': '1',
     'MKL_NUM_THREADS': '1',
@@ -60,6 +61,11 @@ def validate_training_config(cfg: DictConfig, require_random_seed: bool = False)
         raise ValueError('decay_patience must be an integer greater than or equal to 1.')
     if type(decay_rate) not in (int, float) or not 0 < decay_rate < 1:
         raise ValueError('decay_rate must be greater than 0 and less than 1.')
+    backend = cfg.get('backend')
+    if backend is not None and backend not in SUPPORTED_BACKENDS:
+        raise ValueError(
+            f"backend='{backend}' is not supported. Use one of {SUPPORTED_BACKENDS}."
+        )
     if 'random_seed' not in cfg or cfg.random_seed is None:
         if require_random_seed:
             raise ValueError('New training runs require an integer random_seed.')

@@ -28,6 +28,24 @@ from helpers.utils import getIndex
 from quantum.circuits import registry
 from quantum.circuits.base import Circuit, CircuitWeights
 
+_jax_x64_enabled = False
+
+
+def _enable_jax_x64_once() -> None:
+    """Enable float64 in JAX, once, before any JAX array is created.
+
+    Must run before the jax backend touches a single array: JAX defaults to
+    float32, and enabling x64 later leaves already-created arrays at float32,
+    silently diverging from the autograd path's float64 baseline. Importing
+    jax stays conditional on this backend being selected.
+    """
+    global _jax_x64_enabled
+    if _jax_x64_enabled:
+        return
+    import jax
+    jax.config.update("jax_enable_x64", True)
+    _jax_x64_enabled = True
+
 
 class QuantumClassifier:
     """
@@ -59,6 +77,8 @@ class QuantumClassifier:
         random_seed: Optional[int] = None,
         **kwargs: Any
     ) -> None:
+        if backend_name == 'jax':
+            _enable_jax_x64_once()
         # Circuit configuration
         self.n_qubits = wires
         self.num_layers = layers
@@ -199,6 +219,13 @@ class QuantumClassifier:
         self._impl = circuit_registry.get(circuit_type, self.num_layers)
         if operations_per_qubit is not None:
             self._impl.operations_per_qubit = operations_per_qubit
+        if self.backend == 'jax' and self.device.shots:
+            raise ValueError(
+                f"backend='jax' only supports analytic execution (shots<=0), but this "
+                f"device has shots={self.device.shots.total_shots}. Finite-shot sampling "
+                "under the jax backend is not implemented; use backend='autograd' for "
+                "finite-shot runs, or set shots<=0 for an analytic jax run."
+            )
         try:
             qnode = qml.QNode(
                 lambda weights, inputs: self._impl.build(weights, inputs, self.auto_wires),
