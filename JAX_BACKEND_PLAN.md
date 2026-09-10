@@ -1,11 +1,13 @@
 # JAX backend feature plan
 
-Status: planning only, nothing implemented. Branch `feature-jax`. Written 2026-09-10, revised
-2026-09-10 after an independent adversarial review (see inline "found in review"/"CRITICAL" notes,
-concentrated in sections 2, 4, 6, 7, 8) that independently reproduced the JAX-version-pin finding
-and surfaced one critical gap: the jax training branch must explicitly write back to
-`self.current_weights` (section 6, risk 0), or validation, checkpoints, and the final certified
-model silently use untrained weights.
+Status: environment created and GPU-verified (section 3); no pipeline code changed yet. Branch
+`feature-jax`. Written 2026-09-10, revised 2026-09-10 after an independent adversarial review (see
+inline "found in review"/"CRITICAL" notes, concentrated in sections 2, 4, 6, 7, 8) that
+independently reproduced the JAX-version-pin finding and surfaced one critical gap: the jax
+training branch must explicitly write back to `self.current_weights` (section 6, risk 0), or
+validation, checkpoints, and the final certified model silently use untrained weights. Task-list
+step 1 (env creation + real GPU verification, including PennyLane+jax+Hamiltonian-coefficient
+gradients+jit on actual GPU hardware) is now done — see section 3.
 
 ## 1. Scope
 
@@ -129,12 +131,14 @@ device/backend-dependent and not the documented portable path.
 
 ## 3. New conda environment spec
 
-Do not create this env as part of the plan — for the implementor to create. Suggested name:
-`pennylane-gpu-jax-sep2026` (kept separate from `pennylane-gpu-sep2026` so the maintained autograd
-path's env is never put at risk by a jax-driven dependency conflict).
+**Status: created and GPU-verified on 2026-09-10** (env name `pennylane-gpu-jax-sep2026`, kept
+separate from `pennylane-gpu-sep2026` so the maintained autograd path's env is never put at risk
+by a jax-driven dependency conflict). The recipe below is the actual working recipe, corrected
+after a real dependency conflict surfaced during creation — the original guess (`jax[cuda12]`
+alone) did not work as-is; see "What actually happened" below before reproducing this elsewhere.
 
 ```bash
-conda create -n pennylane-gpu-jax-sep2026 python=3.14
+conda create -y -n pennylane-gpu-jax-sep2026 python=3.14
 conda activate pennylane-gpu-jax-sep2026
 
 # Same core stack as pennylane-gpu-sep2026 (pin exact versions to match)
@@ -145,28 +149,59 @@ pip install "pennylane==0.45.1" "pennylane-lightning==0.45.0" \
             "scikit-learn==1.9.0" "tqdm==4.70.0" "wandb==0.29.0"
 
 # JAX, pinned -- see section 2 for why this exact version, not latest
-pip install "jax[cuda12]==0.10.2" "optax"
+pip install "jax[cuda12_local]==0.10.2" "optax"
+
+# Remove pip CUDA math-library wheels that conflict with this machine's globally-set
+# LD_LIBRARY_PATH (see "What actually happened" below) -- everything except cuDNN falls back
+# cleanly to the system CUDA 12.8 install at /usr/local/cuda-12.8 (already on LD_LIBRARY_PATH).
+pip uninstall -y nvidia-cusparse-cu12 nvidia-nvjitlink-cu12 nvidia-cusolver-cu12 \
+                 nvidia-nccl-cu12 nvidia-nvshmem-cu12 nvidia-cuda-cupti-cu12 \
+                 nvidia-cuda-nvcc-cu12 nvidia-cuda-cccl-cu12 nvidia-cufft-cu12
+# cuDNN has no system-wide install on this machine, so it must stay a pip package:
+pip install "nvidia-cudnn-cu12"
 ```
 
-Notes for the implementor:
-- `jax[cuda12]==0.10.2` pulls `jaxlib==0.10.2`, `jax-cuda12-plugin==0.10.2`, and bundled
-  `nvidia-*-cu12` wheels (dry-run resolved cleanly against CUDA 12.9 runtime wheels in this
-  session). The installed driver (570.211.01, CUDA 12.8 capable) is expected to run CUDA 12.9
-  runtime wheels under NVIDIA's minor-version forward compatibility, but this was not verified on
-  actual GPU hardware in this session (the verification venv was CPU-only, no GPU present in the
-  planning sandbox) — **the implementor must confirm a real GPU op runs** (e.g.
-  `jax.numpy.ones(3).device`, then a small matmul) immediately after creating this env, before
-  relying on it.
-  If the driver rejects the bundled runtime, fall back to `pip install "jax[cuda12_local]==0.10.2"`,
-  which uses the system CUDA toolkit already present (`nvcc` confirms 12.8.93 is installed).
+**What actually happened (read before reproducing this env elsewhere):** this machine sets
+`LD_LIBRARY_PATH` globally to include `/usr/local/cuda-12.8/lib64` (a full system CUDA 12.8
+toolkit, `nvcc` 12.8.93, confirmed present). `pip install "jax[cuda12]==0.10.2"` (the bundled
+variant) pulled `nvidia-cusparse-cu12==12.5.10.65` (the newest cusparse wheel PyPI has — there is
+no 12.9.x cusparse release) alongside `nvidia-nvjitlink-cu12==12.9.86` (newest available). At
+runtime, `jax-cuda12-plugin`'s dlopen of the pip-bundled `libcusparse.so.12` resolved its
+`libnvJitLink.so.12` dependency to the **system's older CUDA-12.8 nvjitlink** (via
+`LD_LIBRARY_PATH`) instead of the intended pip-bundled 12.9.86 one, producing
+`undefined symbol: __nvJitLinkGetErrorLogSize_12_9` and a silent CPU fallback (confirmed via a
+direct `ctypes.CDLL` reproduction of the exact failure). Switching to `jax[cuda12_local]` and
+removing the conflicting pip nvidia-\*-cu12 packages (keeping `nvidia-cublas-cu12`,
+`nvidia-cuda-runtime-cu12`, `nvidia-cuda-nvrtc-cu12`, and `nvidia-cudnn-cu12`, which either don't
+conflict or have no system equivalent) let every other CUDA math library resolve cleanly through
+the system's internally-consistent CUDA 12.8 install. **Verified working end-to-end after the
+fix:** `jax.devices()` reports both GPUs (`CudaDevice(id=0)`, `CudaDevice(id=1)`); a PennyLane
+`default.qubit` QNode with `interface='jax'`, `diff_method='backprop'`, a Hamiltonian with
+trainable per-wire coefficients, `jax.vmap`-batched inputs, and `jax.jit(jax.value_and_grad(...))`
+all ran correctly on `cuda:0`, with nonzero Hamiltonian-coefficient gradients and jitted output
+matching unjitted output exactly. `qml.device('lightning.gpu', wires=2)` still constructs
+successfully after the pip package removal (unaffected — it resolves its own CUDA deps
+differently). `pip check` reports `pennylane-lightning-gpu` wants `nvidia-cusparse-cu12` and
+`nvidia-nvjitlink-cu12` installed (a stale metadata complaint only — lightning-gpu is not used by
+the jax feature at all, since `default.qubit` + `interface='jax'` gets GPU acceleration through
+JAX's own array backend, not through `pennylane-lightning-gpu`); harmless, but worth knowing if
+`pip check` is ever run as a health check on this env.
+
+**If this env needs to be recreated on a different machine:** first check whether that machine
+also sets `LD_LIBRARY_PATH` to a system CUDA install. If not, `jax[cuda12]` (the fully
+self-contained bundled variant, no uninstalls needed) is likely simpler and should be tried first;
+the local/system-CUDA route above is what this specific machine needed, not necessarily a general
+rule.
+
+Other notes:
 - `optax` has no strict upper pin needed against `jax==0.10.2` (`optax`'s own floor is
   `jax>=0.5.3`); just avoid installing a newer `jax` afterward that would silently override the
   pin.
 - Do not install `torch` in this env unless something explicitly needs it; the maintained
   pipeline doesn't use it.
-- Confirm `python -m unittest discover -s tests -q` still collects and skips (not errors) inside
-  this new env before using it for anything beyond jax-specific development, since some test
-  infra imports may assume the primary env's package set.
+- `python -m unittest discover -s tests -q` was run in this env and executed real training
+  (autograd path, unaffected by any of the above) without environment-level import/collection
+  errors.
 
 ## 4. File-by-file change list
 
@@ -463,7 +498,8 @@ New tests, mirroring existing rigor:
 
 ## 8. Ordered implementation task list
 
-1. Create `pennylane-gpu-jax-sep2026` conda env per section 3; verify a real GPU jax op runs.
+1. ~~Create `pennylane-gpu-jax-sep2026` conda env per section 3; verify a real GPU jax op runs.~~
+   **Done 2026-09-10** — see section 3 for the corrected recipe and verification results.
 2. Add the `backend='jax'` + `shots>0` rejection in `QuantumClassifier.set_circuit()` (small,
    isolated, testable first).
 3. Add `jax_enable_x64` activation, gated on `backend=='jax'`, in `QuantumClassifier.__init__`.
