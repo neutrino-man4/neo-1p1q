@@ -34,9 +34,9 @@ batch_size: 100
 epochs: 25
 lr: 0.05
 improv: 0.01
-min_epochs: 10
+min_epochs: 3
 decay_rate: 0.5
-decay_patience: 3
+decay_patience: 2
 loss: 'BCE'
 
 # Run control
