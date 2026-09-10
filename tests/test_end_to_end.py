@@ -92,7 +92,7 @@ def _run_seeded_training(random_seed: int):
         backend_name='autograd',
         random_seed=random_seed,
     )
-    vqc.set_circuit('normal', operations_per_qubit=3)
+    vqc.set_circuit('normal', operations_per_qubit=3, diff_method='parameter-shift')
     shape = vqc._impl.rotation_shape(2, 1)
     initial = onp.random.default_rng(random_seed).uniform(
         0, onp.pi, size=(shape.L, shape.N, shape.R)

@@ -71,5 +71,26 @@ class TestVQCCircuitWiring(unittest.TestCase):
         self.assertAlmostEqual(out, 0.034755910654483246, places=12)
 
 
+class TestSetCircuitDiffMethodValidation(unittest.TestCase):
+    """set_circuit() must reject an incompatible diff_method with a clear, actionable error."""
+
+    def test_backprop_on_finite_shot_lightning_qubit_raises_with_suggestion(self) -> None:
+        qc = arch.QuantumClassifier(
+            wires=2, layers=1, shots=50, dev_name='lightning.qubit', backend_name='autograd',
+        )
+        with self.assertRaises(ValueError) as context:
+            qc.set_circuit('normal', diff_method='backprop')
+        message = str(context.exception)
+        self.assertIn('backprop', message)
+        self.assertIn('parameter-shift', message)
+
+    def test_parameter_shift_on_finite_shot_lightning_qubit_succeeds(self) -> None:
+        qc = arch.QuantumClassifier(
+            wires=2, layers=1, shots=50, dev_name='lightning.qubit', backend_name='autograd',
+        )
+        qc.set_circuit('normal', diff_method='parameter-shift')
+        self.assertIsNotNone(qc.circuit)
+
+
 if __name__ == '__main__':
     unittest.main()
