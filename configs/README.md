@@ -97,7 +97,8 @@ The circuit consumes `wires * num_layers` particles per jet by default. Set `num
 | `wires` | Number of data qubits. |
 | `num_layers` | Number of encoding, entangling, and trainable rotation layers. Each layer consumes another group of `wires` particles. |
 | `shots` | Number of measurement shots. The default `-1` selects analytic expectation values. |
-| `device_name` | PennyLane device name. The default is the fast CPU simulator `lightning.qubit`. Every QNode is built with `diff_method='parameter-shift'` (not the device default, which resolves to adjoint on `lightning.qubit` and cannot differentiate `aux_weights.hamiltonian_coeffs`, silently freezing them at their initial value). |
+| `device_name` | PennyLane device name. The default is `default.qubit`. |
+| `diff_method` | PennyLane QNode differentiation method. The default is `backprop`, which differentiates `aux_weights.hamiltonian_coeffs` correctly but only works with an analytic (`shots: -1`), backprop-capable device such as `default.qubit`. `parameter-shift` works on any device and any shot count (including finite shots and `lightning.qubit`) at the cost of more circuit evaluations per step. `adjoint` is fast on statevector simulators like `lightning.qubit` but cannot differentiate `hamiltonian_coeffs` -- it silently returns a zero gradient for them. An incompatible combination (e.g. `backprop` with finite shots or `lightning.qubit`) raises a `ValueError` naming the conflict and suggesting `parameter-shift`. |
 | `backend` | PennyLane QNode interface. The maintained training path uses `autograd`. |
 | `circuit_type` | Circuit name from `quantum/circuits/registry.py`. The supported value is `normal`. |
 | `operations_per_qubit` | Trainable rotation parameters per qubit and layer. The current VQC requires `3` for its RZ, RY, and RX rotations. |
