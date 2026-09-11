@@ -60,11 +60,12 @@ The default paths are relative to the directory where the command is run. Overri
 python run_experiments.py \
   --config configs/base.yaml \
   --number-of-runs 10 \
-  --num-cores 4 \
+  --num-processes 4 \
+  --gpu-id 0,1 \
   seed=experiment_001
 ```
 
-`--number-of-runs` and `--num-cores` default to 1. They belong to the launcher, not the YAML, and are not saved with a model. Each subprocess uses one computational thread, so `--num-cores 4` permits at most four simultaneous training processes. The launcher does not resume runs; resume an individual saved configuration with `train.py --resume`. `random_seed` is generated per run and rejected as an override on `run_experiments.py`; set it directly only when calling `train.py`.
+`--number-of-runs`, `--num-processes`, and `--gpu-id` belong to the launcher, not the YAML, and are not saved with a model. `--number-of-runs` and `--num-processes` default to 1; `--gpu-id` defaults to `0`. `--num-processes` is the maximum number of simultaneous training processes, independent of GPU count in either direction: it can exceed the number of GPUs listed in `--gpu-id` (processes then share a GPU's compute -- safe, just slower per run) or be smaller than it (some listed GPUs go unused that round). `--gpu-id` only affects `backend='jax'` runs (this pipeline has no GPU-accelerated `autograd` path); each launched process is assigned one GPU from the list in round-robin order via `CUDA_VISIBLE_DEVICES`, so it only ever sees and uses that one GPU. The launcher does not resume runs; resume an individual saved configuration with `train.py --resume`. `random_seed` is generated per run and rejected as an override on `run_experiments.py`; set it directly only when calling `train.py`.
 
 ## Data entries
 

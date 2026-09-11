@@ -58,7 +58,8 @@ Launch repeated runs, each with a randomly generated seed, and bounded paralleli
 python run_experiments.py \
   --config configs/base.yaml \
   --number-of-runs 10 \
-  --num-cores 4 \
+  --num-processes 4 \
+  --gpu-id 0,1 \
   seed=experiment_001 \
   data_dir=/path/to/JetClass
 ```
