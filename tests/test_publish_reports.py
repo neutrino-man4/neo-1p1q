@@ -45,6 +45,7 @@ class TestReportPublication(unittest.TestCase):
         scores: list[float],
         labels: list[int],
         epoch_times: list[float] | None = None,
+        compile_times: dict[str, float] | None = None,
     ) -> None:
         run_dir = self.models / experiment / str(random_seed)
         result_dir = self.results / experiment / str(random_seed)
@@ -104,6 +105,12 @@ class TestReportPublication(unittest.TestCase):
                 writer.writerow(["epoch", "seconds"])
                 for epoch, seconds in enumerate(epoch_times, start=1):
                     writer.writerow([epoch, seconds])
+        if compile_times is not None:
+            with (run_dir / "compile_times.csv").open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(["step", "seconds"])
+                for step, seconds in compile_times.items():
+                    writer.writerow([step, seconds])
         with (result_dir / "test_results.pickle").open("wb") as stream:
             pickle.dump({
                 "scores": np.asarray(scores),
@@ -193,6 +200,42 @@ class TestReportPublication(unittest.TestCase):
         self.assertNotIn("epoch_times", no_csv_run)
         messages = [notice["message"] for notice in detail["notices"]]
         self.assertFalse(any("poch tim" in message for message in messages))
+
+    def test_compile_times_are_aggregated_and_excluded_from_public_runs(self) -> None:
+        self._write_run(
+            "005", 60, [0.5, 0.6], [0.1, 0.9], [0, 1],
+            compile_times={"train": 600.0, "val": 120.0},
+        )
+        self._write_run(
+            "005", 61, [0.5, 0.6], [0.1, 0.9], [0, 1],
+            compile_times={"train": 620.0, "val": 100.0},
+        )
+        # No compile_times.csv for this run -- an autograd run or one predating the feature.
+        self._write_run("005", 62, [0.5, 0.6], [0.1, 0.9], [0, 1])
+
+        publish_reports.publish_reports(self.models, self.results, self.output, self.site)
+        detail = json.loads((self.output / "data" / "005.json").read_text())
+
+        compile_times = detail["compile_times"]
+        self.assertAlmostEqual(compile_times["train"]["mean"], 610.0)
+        self.assertAlmostEqual(compile_times["train"]["std"], 10.0)
+        self.assertEqual(compile_times["train"]["n"], 2)
+        self.assertAlmostEqual(compile_times["val"]["mean"], 110.0)
+        self.assertAlmostEqual(compile_times["val"]["std"], 10.0)
+        self.assertEqual(compile_times["val"]["n"], 2)
+
+        for run in detail["runs"]:
+            self.assertNotIn("compile_times", run)
+        messages = [notice["message"] for notice in detail["notices"]]
+        self.assertFalse(any("compile" in message.lower() for message in messages))
+
+    def test_missing_compile_times_produces_empty_aggregate(self) -> None:
+        self._write_run("006", 70, [0.5, 0.6], [0.1, 0.9], [0, 1])
+
+        publish_reports.publish_reports(self.models, self.results, self.output, self.site)
+        detail = json.loads((self.output / "data" / "006.json").read_text())
+
+        self.assertEqual(detail["compile_times"], {})
 
     def test_jax_backend_experiment_publishes_without_error(self) -> None:
         """publish_reports only reads config.yaml/results, never a checkpoint, so it
