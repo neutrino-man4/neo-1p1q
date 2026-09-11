@@ -100,6 +100,27 @@ def _make_jax_train_step(
     return train_step
 
 
+def _make_jax_val_step(circuit: qml.QNode, loss_type: str, quantum_loss: Callable) -> Callable:
+    """Build one jax.jit-compiled forward pass for validation (no gradient, no
+    optimizer update). Mirrors _make_jax_train_step's shape-retracing behaviour:
+    val_loader has its own regular/final-partial-batch shapes, so this compiles
+    at most twice per run, not once per epoch.
+    """
+    import jax
+
+    def cost_fn(params: Dict[str, Any], data: Any, labels: Any) -> Any:
+        weights = CircuitWeights(
+            rot=params['rot'],
+            aux={key: value for key, value in params.items() if key != 'rot'},
+        )
+        return quantum_loss(
+            weights, inputs=data, labels=labels,
+            quantum_circuit=circuit, return_scores=True, loss_type=loss_type,
+        )
+
+    return jax.jit(cost_fn)
+
+
 class QuantumClassifier:
     """
     A Quantum Classifier that uses quantum circuits for classification tasks.
@@ -487,21 +508,26 @@ class QuantumTrainer:
         self.n_decays = 0
 
         # jax backend: current_weights stays the single source of truth (read by
-        # validation, checkpointing, and final certification, all backend-agnostic);
-        # jax_params/jax_opt_state are the differentiable/optax-native mirror used
-        # only inside iteration()'s training step. restore_checkpoint() re-derives
-        # both from a restored current_weights on resume. _jax_train_step is jitted
-        # once here (not per-call) so jax.jit's compilation cache actually applies --
-        # a freshly redefined closure every call would defeat it, since jit's cache
+        # checkpointing and final certification, backend-agnostic); jax_params/
+        # jax_opt_state are the differentiable/optax-native mirror used inside
+        # iteration()'s training step and (params only, no opt_state) its
+        # validation step. restore_checkpoint() re-derives both from a restored
+        # current_weights on resume. _jax_train_step/_jax_val_step are jitted once
+        # here (not per-call) so jax.jit's compilation cache actually applies -- a
+        # freshly redefined closure every call would defeat it, since jit's cache
         # key includes function identity, not just argument shapes.
         self.jax_params: Optional[Dict[str, Any]] = None
         self.jax_opt_state: Optional[Any] = None
         self._jax_train_step: Optional[Callable] = None
+        self._jax_val_step: Optional[Callable] = None
         if self.backend == 'jax' and self.current_weights is not None:
             self.jax_params = to_jax_pytree(self.current_weights)
             self.jax_opt_state = self.optim.init(self.jax_params)
             self._jax_train_step = _make_jax_train_step(
                 self.circuit, self.optim, self.loss_type, self.quantum_loss
+            )
+            self._jax_val_step = _make_jax_val_step(
+                self.circuit, self.loss_type, self.quantum_loss
             )
         
         # Directories (to be set later)
@@ -562,14 +588,17 @@ class QuantumTrainer:
             new_rot, *new_aux_values = updated_args
             self.current_weights = CircuitWeights(rot=new_rot, aux=dict(zip(aux_keys, new_aux_values)))
             return float(cost)
-        cost, scores = self.quantum_loss(
-            self.current_weights,
-            inputs=data,
-            labels=labels,
-            quantum_circuit=self.circuit,
-            return_scores=True,
-            loss_type=self.loss_type
-        )
+        if self.backend == 'jax':
+            cost, scores = self._jax_val_step(self.jax_params, data, labels)
+        else:
+            cost, scores = self.quantum_loss(
+                self.current_weights,
+                inputs=data,
+                labels=labels,
+                quantum_circuit=self.circuit,
+                return_scores=True,
+                loss_type=self.loss_type
+            )
         return float(cost), np.reshape(np.array(scores, requires_grad=False), (-1,))
     
     def is_evictable_job(self, seed: Optional[Any] = None) -> None:
