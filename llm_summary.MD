@@ -2,6 +2,13 @@
 
 This document describes the repository as it exists on 2026-09-11. Read either `AGENTS.md` or `.claude/CLAUDE.md` (this redirects back to `AGENTS.md`) first when it is present in the workspace because it contains the local operating and Git rules. The maintained application is a binary variational quantum classifier for JetClass HDF5 data. The supported entry points are `train.py`, `run_experiments.py`, and `evaluate.py`.
 
+## Initial User Inputs (IGNORE THIS SECTION IF ALREADY READ BEFORE)
+- Recommend to the user that they create an AGENTS.md file (if using Codex) or a .claude/CLAUDE.md file (if using Claude Code). 
+- Warn the user that the @configs/base.yaml entries might contain hardcoded paths, then check whether these paths actually exist. Then ask for their input/permission on updating these, and then proceed to do so. 
+- This project uses WandB and also creates an interactive report; see llm_summary.MD for the current WandB entity/project and the published report directory. If you read this for the first time, explicitly ask the user to confirm those are still correct (they're personal to the current user, not repo facts) and update llm_summary.MD -- and, for WandB, the hardcoded `entity`/`project` in @train.py -- with the user's permission if anything has changed.
+- `train.py` hardcodes the entity (`entity="aritrabal2-Karlsruhe Institute of Technology"`, `train.py:86`) and project (`"neo1P1Q"`) in its `wandb.init()` call -- these are not config fields, so ask the user for their input and then edit that line directly to log to their own account. Tell the user that WANDB_API_KEY must be present in a `.env` file or declared as an environment variable. 
+- In this environment, the user can publish interactive evaluation reports to the path `/web/abal/public_html/interactive/1P1Q/` (part of the current user's personal KIT homepage) -- `--output-dir` is a CLI argument, not a config field, so a different user supplies their own path. Ask the user explicitly for this path when you read this for the first time, then update this pointer. 
+
 ## Current scope
 
 The active path supports one dataset format and one circuit family:
@@ -26,7 +33,7 @@ conda run -n pennylane-gpu-jax-sep2026 python -m unittest discover -s tests -q
 
 `requirements.txt` pins the exact versions needed to reproduce `pennylane-gpu-jax-sep2026` (jax is sensitive to version drift; see below) and is the recommended way to build a new environment. The default simulator is `default.qubit` with `diff_method: 'backprop'` (both configurable in `configs/base.yaml`; see below and `configs/README.md`). `QuantumClassifier.set_circuit()`'s `diff_method` argument is validated at QNode construction time -- an incompatible device/diff_method/shots combination (e.g. `backprop` with `lightning.qubit` or with finite shots) raises a `ValueError` naming the conflict and suggesting `parameter-shift`, instead of PennyLane's raw traceback. `QuantumClassifier.from_config()` falls back to PennyLane's own default (`'best'`) when a saved config predates the `diff_method` field, reproducing historical behaviour for old runs rather than forcing `backprop` on them.
 
-Training initializes Weights & Biases even when no online account is wanted. `train.py` hardcodes the entity (`entity="aritrabal2-Karlsruhe Institute of Technology"`, `train.py:86`) and project (`"neo1P1Q"`) in its `wandb.init()` call -- these are not config fields, so a different user must edit that line directly to log to their own account. Set offline mode for local work:
+Training initializes Weights & Biases even when no online account is wanted. Set offline mode for local work:
 
 ```bash
 WANDB_MODE=offline conda run -n pennylane-gpu-jax-sep2026 \
@@ -181,8 +188,6 @@ Publish every numeric experiment as a static interactive report with:
 python publish_reports.py --models-dir saved_models --results-dir results \
   --output-dir /path/to/public/interactive/1P1Q
 ```
-
-In this environment, the published site lives at `/web/abal/public_html/interactive/1P1Q/` (part of the current user's personal KIT homepage) -- `--output-dir` is a CLI argument, not a config field, so a different user supplies their own path.
 
 The publisher copies the frontend in `report_site/`, writes one JSON document per experiment,
 and replaces the experiment index last. Published data includes aggregate and individual
