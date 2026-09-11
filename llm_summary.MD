@@ -269,6 +269,8 @@ Each validation pass also logs a signal-vs-background classifier score histogram
 
 Each completed training epoch (`n_epoch > 0`) also appends one `epoch,seconds` row to `epoch_times.csv` in the run directory (gated by `save=true`, same as checkpoints) and logs `epoch_time_s` in the same per-epoch `wandb.log()` call as `val_loss`/`val_auc`. This is a standalone artifact independent of `self.history`/the checkpoint schema -- resume needs no special handling, since it only times epochs actually executed in the current process and appends to whatever CSV already exists. `publish_reports.py` surfaces it as `epoch_times.aggregate`/`epoch_times.runs` (identical shape to `validation`), rendered as a third individual/aggregate toggle chart in the interactive report; a missing `epoch_times.csv` (runs saved before this feature existed) is not reported as a notice.
 
+For `backend='jax'`, the first `_jax_train_step`/`_jax_val_step` call each run isolates pure `jax.jit` compile time from execution via `jax.jit(fn).lower(*args).compile()` (timed separately), then calls the resulting compiled executable -- every later call goes through the plain jitted function, hitting the same cache `.compile()` populated. Written once, at the end of `run_training_loop` (gated by `save=true`), to `compile_times.csv` (`step,seconds`, one row each for `train`/`val`, only for measurements actually taken -- absent entirely for `backend='autograd'`). `publish_reports.py` averages these across an experiment's runs into a top-level `compile_times: {train?: {mean, std, n}, val?: {mean, std, n}}` (each key absent, not zero, if no run has it); the frontend renders it as two plain stat cards ("Avg. circuit compilation time (training/validation)"), not a chart.
+
 After `min_epochs` training epochs, insufficient recent validation AUC improvement multiplies the Adam step size by `decay_rate`. Training stops only when another insufficient-improvement check occurs after `decay_patience` reductions.
 
 A keyboard interrupt during the training loop writes `aborted_weights.pickle`, enters the normal cleanup block, and then exits unsuccessfully. It does not create a certified `trained_model.pickle`.
@@ -294,6 +296,7 @@ A saved run has this structure:
 ├── history.pickle
 ├── history.png
 ├── epoch_times.csv
+├── compile_times.csv
 ├── logs.log
 ├── eval.log
 ├── wandb_run_id.txt
