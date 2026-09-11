@@ -158,9 +158,12 @@ Evaluate all random-seed runs beneath one experiment directory with:
 ```bash
 python evaluate.py \
   --experiment-dir /path/to/saved_models/run_001 \
-  --num-cores 4
+  --num-cores 4 \
+  --gpu-id 0,1
 ```
 
 `--num-cores` defaults to 1 and is used only for experiment-directory evaluation. Each numeric subdirectory counts as one run. Incomplete and failed runs are recorded in `evaluation_summary.log` while the remaining runs continue. Successful results are combined into `roc_curve_summary.png`, whose band is one standard deviation across interpolated ROC curves. The printed and logged AUC error is the standard deviation across successful runs.
+
+`--gpu-id` (default `0`) is also experiment-directory-only, and mirrors `run_experiments.py`'s flag exactly: each launched evaluation subprocess is assigned one GPU from the list in round-robin order, read from that run's own saved `backend` (so a mix of jax and autograd runs in one experiment is handled correctly per run). It has no effect on autograd-backend runs.
 
 Saved runs created before `random_seed` was introduced retain the historical `<save_dir>/<seed>/` layout and can still be resumed or evaluated without adding the new field to their configurations.

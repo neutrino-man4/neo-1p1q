@@ -182,6 +182,8 @@ python evaluate.py --experiment-dir /models/run_001 --num-cores 4
 
 It rejects training overrides and ambiguous sources. When `--model-dir` is omitted, single-run seed lookup uses `save_dir` from the current base config. `--num-cores` is valid only with `--experiment-dir` and is not a saved configuration field. Evaluation reruns whichever `backend` the loaded run was trained with; it is not a separate choice.
 
+`--gpu-id` (default `0`, also `--experiment-dir`-only) mirrors `run_experiments.py`'s flag: `evaluate.py:_start_evaluation()` reads each run's own saved `backend` from its `config.yaml` and, only for `jax`, sets `CUDA_VISIBLE_DEVICES`/`XLA_PYTHON_CLIENT_PREALLOCATE=false` before launching that subprocess, with GPUs assigned round-robin across concurrently launched evaluations -- the same treatment `run_experiments.py` applies to training, added separately since evaluation's subprocess launcher never inherited it originally.
+
 Publish every numeric experiment as a static interactive report with:
 
 ```bash

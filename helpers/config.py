@@ -166,6 +166,14 @@ def parse_evaluation_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--num-cores', type=positive_integer, default=1,
         help='Maximum simultaneous evaluations for --experiment-dir (default: 1)',
     )
+    parser.add_argument(
+        '--gpu-id', type=gpu_id_list, default=[0],
+        help=(
+            'Comma-separated GPU indices for --experiment-dir jax-backend runs '
+            '(default: 0). Round-robin assigned across concurrent evaluations; '
+            'has no effect for autograd-backend runs.'
+        ),
+    )
     args = parser.parse_args(argv)
     if args.experiment_dir:
         if args.model_dir is not None or args.random_seed is not None:
@@ -174,6 +182,8 @@ def parse_evaluation_args(argv: list[str] | None = None) -> argparse.Namespace:
         return args
     if args.num_cores != 1:
         parser.error('--num-cores can only be used with --experiment-dir')
+    if args.gpu_id != [0]:
+        parser.error('--gpu-id can only be used with --experiment-dir')
     if args.config:
         if args.model_dir is not None or args.random_seed is not None:
             parser.error('--model-dir and --random-seed can only be used with --seed')

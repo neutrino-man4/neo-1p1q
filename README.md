@@ -95,7 +95,8 @@ Evaluate every random-seed run in an experiment directory in parallel with:
 ```bash
 python evaluate.py \
   --experiment-dir /path/to/saved_models/run_001 \
-  --num-cores 4
+  --num-cores 4 \
+  --gpu-id 0,1
 ```
 
 Experiment mode examines each numeric subdirectory and logs incomplete or failed runs without stopping the remaining evaluations. It writes `evaluation_summary.log` and `roc_curve_summary.png` in the experiment directory. The ROC curve shows the mean true-positive rate with a one-standard-deviation band. The final report gives the total, successful, and failed run counts; jets per run and total jet evaluations; and mean AUC plus or minus its run-to-run standard deviation to four decimal places.

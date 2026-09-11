@@ -56,10 +56,15 @@ class TestEvaluationExperimentCLI(unittest.TestCase):
 
     def test_experiment_directory_and_core_count(self) -> None:
         args = parse_evaluation_args([
-            '--experiment-dir', '/tmp/experiment', '--num-cores', '3',
+            '--experiment-dir', '/tmp/experiment', '--num-cores', '3', '--gpu-id', '0,1',
         ])
         self.assertEqual(args.experiment_dir, '/tmp/experiment')
         self.assertEqual(args.num_cores, 3)
+        self.assertEqual(args.gpu_id, [0, 1])
+
+    def test_gpu_id_defaults_to_zero(self) -> None:
+        args = parse_evaluation_args(['--experiment-dir', '/tmp/experiment'])
+        self.assertEqual(args.gpu_id, [0])
 
     def test_rejects_ambiguous_or_invalid_options(self) -> None:
         invalid = [
@@ -67,6 +72,7 @@ class TestEvaluationExperimentCLI(unittest.TestCase):
             ['--experiment-dir', '/tmp/run', '--model-dir', '/tmp/models'],
             ['--experiment-dir', '/tmp/run', '--num-cores', '0'],
             ['--config', '/tmp/config.yaml', '--num-cores', '2'],
+            ['--config', '/tmp/config.yaml', '--gpu-id', '0,1'],
         ]
         for args in invalid:
             with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()), \
@@ -111,7 +117,7 @@ class TestExperimentEvaluation(unittest.TestCase):
         paths = [Path(f'/tmp/{seed}/config.yaml') for seed in (42, 43, 44)]
         started = []
 
-        def start(config_path):
+        def start(config_path, gpu_id):
             random_seed = int(config_path.parent.name)
             started.append(random_seed)
             return _FakeProcess(return_code=1 if random_seed == 42 else 0)
@@ -134,15 +140,51 @@ class TestExperimentEvaluation(unittest.TestCase):
             captured.update(kwargs)
             return _FakeProcess()
 
-        path = Path('/tmp/42/config.yaml')
-        with patch.object(evaluate.subprocess, 'Popen', side_effect=popen):
-            evaluate._start_evaluation(path)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '42' / 'config.yaml'
+            path.parent.mkdir()
+            path.write_text('backend: autograd\n', encoding='utf-8')
+            with patch.object(evaluate.subprocess, 'Popen', side_effect=popen):
+                evaluate._start_evaluation(path, gpu_id=0)
 
         self.assertEqual(captured['command'][-2:], ['--config', str(path)])
         self.assertTrue(captured['start_new_session'])
         for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
             self.assertEqual(captured['env'][name], '1')
         self.assertEqual(captured['env'].get('PATH'), os.environ.get('PATH'))
+        self.assertNotIn('CUDA_VISIBLE_DEVICES', captured['env'])
+        self.assertNotIn('XLA_PYTHON_CLIENT_PREALLOCATE', captured['env'])
+
+    def test_jax_backend_disables_gpu_memory_preallocation_and_pins_gpu(self) -> None:
+        captured = {}
+
+        def popen(command, **kwargs):
+            captured.update(kwargs)
+            return _FakeProcess()
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / '42' / 'config.yaml'
+            path.parent.mkdir()
+            path.write_text('backend: jax\n', encoding='utf-8')
+            with patch.object(evaluate.subprocess, 'Popen', side_effect=popen):
+                evaluate._start_evaluation(path, gpu_id=1)
+
+        self.assertEqual(captured['env']['CUDA_VISIBLE_DEVICES'], '1')
+        self.assertEqual(captured['env']['XLA_PYTHON_CLIENT_PREALLOCATE'], 'false')
+
+    def test_gpu_ids_assigned_round_robin(self) -> None:
+        paths = [Path(f'/tmp/{seed}/config.yaml') for seed in (42, 43, 44)]
+        assigned = []
+
+        def start(config_path, gpu_id):
+            assigned.append(gpu_id)
+            return _FakeProcess()
+
+        with patch.object(evaluate, '_start_evaluation', side_effect=start), \
+                patch.object(evaluate.time, 'sleep'):
+            evaluate.evaluate_configs(paths, num_cores=1, gpu_ids=[0, 1])
+
+        self.assertEqual(assigned, [0, 1, 0])
 
     def test_keyboard_interrupt_stops_active_evaluations(self) -> None:
         process = _FakeProcess()

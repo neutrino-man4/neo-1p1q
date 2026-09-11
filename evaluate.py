@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+from typing import Sequence
 
 import matplotlib
 matplotlib.use('Agg')
@@ -142,40 +143,59 @@ def discover_evaluation_runs(
     return len(seed_directories), runnable, failures, notices
 
 
-def _start_evaluation(config_path: pathlib.Path) -> subprocess.Popen:
-    """Start one single-threaded evaluation subprocess."""
+def _start_evaluation(config_path: pathlib.Path, gpu_id: int) -> subprocess.Popen:
+    """Start one single-threaded evaluation subprocess.
+
+    Mirrors run_experiments.py's _start_training: a jax-backend run (read from
+    its own saved config.yaml) gets XLA_PYTHON_CLIENT_PREALLOCATE=false (JAX's
+    default eager GPU memory preallocation can OOM a second concurrent jax
+    subprocess on a shared GPU) and CUDA_VISIBLE_DEVICES=gpu_id (confines this
+    process to exactly the one GPU it was assigned). Both must be set before
+    `import jax` happens in that process, i.e. in its environment before Popen
+    starts it. Autograd-backend runs are unaffected.
+    """
     environment = os.environ.copy()
     environment.update(SINGLE_THREAD_ENV)
+    backend = OmegaConf.load(config_path).get('backend')
+    suffix = ''
+    if backend == 'jax':
+        environment['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+        environment['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+        suffix = f' on GPU {gpu_id}'
     command = [
         sys.executable,
         str(pathlib.Path(__file__).resolve()),
         '--config',
         str(config_path),
     ]
-    print(f'Launching evaluation for random_seed={config_path.parent.name}')
+    print(f'Launching evaluation for random_seed={config_path.parent.name}{suffix}')
     return subprocess.Popen(command, env=environment, start_new_session=True)
 
 
 def evaluate_configs(
     config_paths: list[pathlib.Path],
     num_cores: int,
+    gpu_ids: Sequence[int] = (0,),
 ) -> tuple[list[pathlib.Path], dict[str, str], bool]:
     """Evaluate configs with bounded parallelism while retaining every failure."""
     pending = deque(config_paths)
     active: dict[subprocess.Popen, pathlib.Path] = {}
     successful = []
     failures = {}
+    launched = 0
 
     try:
         while pending or active:
             while pending and len(active) < num_cores:
                 config_path = pending.popleft()
+                gpu_id = gpu_ids[launched % len(gpu_ids)]
                 try:
-                    process = _start_evaluation(config_path)
+                    process = _start_evaluation(config_path, gpu_id)
                 except OSError as error:
                     failures[config_path.parent.name] = f'could not launch: {error}'
                     continue
                 active[process] = config_path
+                launched += 1
 
             completed = []
             while active and not completed:
@@ -299,7 +319,7 @@ def summarize_evaluations(
     return '\n'.join(lines)
 
 
-def evaluate_experiment(experiment_dir: str, num_cores: int) -> int:
+def evaluate_experiment(experiment_dir: str, num_cores: int, gpu_ids: Sequence[int] = (0,)) -> int:
     """Evaluate and summarize all random-seed runs under one experiment."""
     root = pathlib.Path(experiment_dir).expanduser().resolve()
     if not root.is_dir():
@@ -314,7 +334,7 @@ def evaluate_experiment(experiment_dir: str, num_cores: int) -> int:
         print(f'Skipping random_seed={random_seed}: {reason}', file=sys.stderr)
 
     successful, runtime_failures, interrupted = evaluate_configs(
-        config_paths, num_cores
+        config_paths, num_cores, gpu_ids
     )
     failures.update(runtime_failures)
     if interrupted:
@@ -345,6 +365,6 @@ if __name__ == "__main__":
     arguments = parse_evaluation_args()
     if arguments.experiment_dir:
         raise SystemExit(
-            evaluate_experiment(arguments.experiment_dir, arguments.num_cores)
+            evaluate_experiment(arguments.experiment_dir, arguments.num_cores, arguments.gpu_id)
         )
     main(arguments.config)
