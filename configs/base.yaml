@@ -20,7 +20,7 @@ dump: '/ceph/abal/Neo1P1Q/results'
 wires: 10
 num_layers: 1
 shots: -1
-backend: 'autograd'
+backend: 'jax'
 device_name: 'default.qubit'
 diff_method: 'backprop'
 circuit_type: 'normal'

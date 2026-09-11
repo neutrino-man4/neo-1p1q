@@ -247,10 +247,10 @@ class TestSavedRun(unittest.TestCase):
         checkpoint = self._checkpoint_payload()
         checkpoint['training']['config']['backend'] = 'jax'
         (checkpoint_dir / 'ep0000.pickle').write_bytes(pickle.dumps(checkpoint))
-        self.assertEqual(self.cfg.backend, 'autograd')
+        autograd_cfg = OmegaConf.merge(self.cfg, {'backend': 'autograd'})
         with self.assertRaisesRegex(ValueError, 'does not match the saved configuration'):
             load_training_checkpoint(
-                self.root, self.cfg, implementation_signature(self.circuit_dir)
+                self.root, autograd_cfg, implementation_signature(self.circuit_dir)
             )
 
     def test_training_entry_point_saves_effective_options_and_final_weights(self) -> None:

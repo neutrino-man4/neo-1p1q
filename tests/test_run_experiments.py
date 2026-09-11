@@ -81,7 +81,7 @@ class TestRunExperiments(unittest.TestCase):
                 self.assertEqual(len(set(seeds)), 3)
                 self.assertTrue(all(isinstance(seed, int) and seed >= 0 for seed in seeds))
                 self.assertEqual(processes, 2)
-                self.assertEqual(backend, 'autograd')
+                self.assertEqual(backend, 'jax')
                 self.assertEqual(gpu_ids, [0])
                 return 0
 
@@ -219,7 +219,7 @@ class TestRunExperiments(unittest.TestCase):
 
     def test_gpu_id_on_autograd_warns_and_has_no_effect(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            config_path = self._config(directory)
+            config_path = self._config(directory, backend='autograd')
             with patch.object(run_experiments, 'launch_runs', return_value=0), \
                     self._capture_stderr() as stderr:
                 run_experiments.main(['--config', config_path, '--gpu-id', '1'])
