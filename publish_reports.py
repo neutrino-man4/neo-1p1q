@@ -82,6 +82,12 @@ def _epoch_time_points(path: Path) -> list[dict[str, float | int]]:
         ]
 
 
+def _compile_times(path: Path) -> dict[str, float]:
+    """Read the jax jit compile-time measurements (train and/or val) from their CSV."""
+    with path.open(newline="", encoding="utf-8") as stream:
+        return {row["step"]: float(row["seconds"]) for row in csv.DictReader(stream)}
+
+
 def _training_metadata(path: Path) -> tuple[int | None, str | None]:
     """Read completion metadata from a certified trained-model payload."""
     payload = _load_pickle(path)
@@ -265,6 +271,21 @@ def _aggregate_epoch_time(runs: list[dict[str, Any]]) -> list[dict[str, float | 
     ]
 
 
+def _aggregate_compile_times(runs: list[dict[str, Any]]) -> dict[str, dict[str, float | int]]:
+    """Average each jax jit compile-time measurement across the runs that have it."""
+    aggregate: dict[str, dict[str, float | int]] = {}
+    for step in ("train", "val"):
+        values = [run["compile_times"][step] for run in runs if step in run["compile_times"]]
+        if values:
+            array = np.asarray(values, dtype=float)
+            aggregate[step] = {
+                "mean": float(np.mean(array)),
+                "std": float(np.std(array)),
+                "n": len(values),
+            }
+    return aggregate
+
+
 def _aggregate_roc(runs: list[dict[str, Any]]) -> list[dict[str, float]]:
     """Average run ROC curves on the evaluation module's 1001-point grid."""
     curves = [run["roc_points"] for run in runs if run["roc_points"]]
@@ -310,6 +331,7 @@ def _run_report(run_dir: Path, result_dir: Path) -> tuple[dict[str, Any], dict[s
     score_histogram: dict[str, list[float]] | None = None
     wandb_run_id = None
     epoch_times: list[dict[str, float | int]] = []
+    compile_times: dict[str, float] = {}
 
     config_path = run_dir / "config.yaml"
     if config_path.is_file():
@@ -341,6 +363,15 @@ def _run_report(run_dir: Path, result_dir: Path) -> tuple[dict[str, Any], dict[s
             notices.append(_notice("Epoch timing data is malformed."))
     # Missing epoch_times.csv is not reported: it's an optional artifact that
     # runs saved before this feature existed will not have.
+
+    compile_times_path = run_dir / "compile_times.csv"
+    if compile_times_path.is_file():
+        try:
+            compile_times = _compile_times(compile_times_path)
+        except Exception:
+            notices.append(_notice("Compile-time data is malformed."))
+    # Missing compile_times.csv is not reported: autograd runs and runs saved
+    # before this feature existed will not have it.
 
     model_path = run_dir / "trained_model.pickle"
     if model_path.is_file():
@@ -386,6 +417,7 @@ def _run_report(run_dir: Path, result_dir: Path) -> tuple[dict[str, Any], dict[s
         "roc_points": roc_points,
         "score_histogram": score_histogram,
         "epoch_times": epoch_times,
+        "compile_times": compile_times,
     }, cfg
 
 
@@ -467,7 +499,7 @@ def build_experiment(experiment_dir: Path, results_dir: Path) -> dict[str, Any]:
     public_runs = [
         {
             key: value for key, value in run.items()
-            if key not in {"validation_auc", "roc_points", "score_histogram", "epoch_times"}
+            if key not in {"validation_auc", "roc_points", "score_histogram", "epoch_times", "compile_times"}
         }
         for run in runs
     ]
@@ -499,6 +531,7 @@ def build_experiment(experiment_dir: Path, results_dir: Path) -> dict[str, Any]:
             "aggregate": _aggregate_epoch_time(runs),
             "runs": epoch_time_runs,
         },
+        "compile_times": _aggregate_compile_times(runs),
         "score_distribution": {
             "runs": score_distribution_runs,
         },
