@@ -9,9 +9,11 @@
  *   has id, status, run_count, successful_runs, mean_auc, std_auc, total_jets,
  *   loss, device, and mode.
  *   data/<id>.json provides `summary`, `validation`, `roc`, `epoch_times`,
- *   `score_distribution`, `runs`, `config`, and `notices`. Missing values are displayed rather than
- *   inferred. `score_distribution.runs` is shown per seed only -- it has no
- *   aggregate view.
+ *   `compile_times`, `score_distribution`, `runs`, `config`, and `notices`. Missing values are
+ *   displayed rather than inferred. `score_distribution.runs` is shown per seed only -- it has no
+ *   aggregate view. `compile_times` (jax-only) is `{train?: {mean, std, n}, val?: {mean, std, n}}`,
+ *   each key absent when no run in the experiment has that measurement; shown as plain stat cards,
+ *   not a chart.
  */
 
 "use strict";
@@ -122,6 +124,19 @@ function renderReport(data) {
   const seedRange = validSeeds.length ? `${validSeeds[0]}${validSeeds.length > 1 ? `–${validSeeds.at(-1)}` : ""}` : "Unavailable";
   document.title = `Neo1P1Q ${id} | Experiment report`;
 
+  // compile_times is jax-only and absent for autograd runs or older reports --
+  // each stat card is skipped entirely rather than shown as "Unavailable".
+  const compileTimes = data.compile_times ?? {};
+  const compileTimeCards = [
+    ["train", "Avg. circuit compilation time (training)"],
+    ["val", "Avg. circuit compilation time (validation)"],
+  ]
+    .map(([key, label]) => {
+      const value = secondsWithError(compileTimes[key]?.mean, compileTimes[key]?.std);
+      return value === null ? "" : statCard(label, value);
+    })
+    .join("");
+
   app.innerHTML = `
     <a class="back-link" href="./"><span aria-hidden="true">&#8592;</span> All experiments</a>
     <header class="report-header">
@@ -137,6 +152,7 @@ function renderReport(data) {
         ${statCard("Evaluated jets", formatInteger(summary.total_jets))}
         ${statCard("Jets per run", formatInteger(summary.jets_per_run))}
         ${statCard("Random seeds", safeText(seedRange))}
+        ${compileTimeCards}
       </div>
     </header>
 
@@ -596,6 +612,13 @@ function aucWithError(mean, deviation) {
   const deviationValue = numeric(deviation);
   if (meanValue === null) return "Unavailable";
   return `${meanValue.toFixed(4)}${deviationValue === null ? "" : ` <span class="muted">&plusmn; ${deviationValue.toFixed(4)}</span>`}`;
+}
+
+function secondsWithError(mean, deviation) {
+  const meanValue = numeric(mean);
+  const deviationValue = numeric(deviation);
+  if (meanValue === null) return null;
+  return `${meanValue.toFixed(2)} s${deviationValue === null ? "" : ` <span class="muted">&plusmn; ${deviationValue.toFixed(2)} s</span>`}`;
 }
 
 function formatInteger(value) {
