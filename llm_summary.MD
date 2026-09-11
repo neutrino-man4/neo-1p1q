@@ -43,7 +43,7 @@ conda run -n pennylane-gpu-jax-sep2026 python train.py --print-config
 
 ## JAX backend (recommended)
 
-`backend: 'jax'` is a PennyLane QNode `interface` value, GPU-accelerated via `jax.jit` and `optax.adam`; it is the recommended backend for new runs on GPU hardware. `backend: 'autograd'` remains the config field's literal default and is required whenever finite-shot execution (`shots>0`) is needed, since jax has no finite-shot path. Full design, verified findings, and pitfalls are in `JAX_BACKEND_PLAN.md` (repo root) -- this section is a condensed pointer, not a replacement for it.
+`backend: 'jax'` is a PennyLane QNode `interface` value, GPU-accelerated via `jax.jit` and `optax.adam`; it is the recommended backend for new runs on GPU hardware. `backend: 'autograd'` remains the config field's literal default and is required whenever finite-shot execution (`shots>0`) is needed, since jax has no finite-shot path.
 
 - `jax==0.10.2` is pinned in `requirements.txt` -- PennyLane 0.45.1's jax interface depends on a `jax.core` API removed in JAX 0.11; a later `jax` silently breaks `adjoint`/`parameter-shift`/`jax.jit` while plain `backprop` still appears to work.
 - Analytic execution only (`shots<=0`); `set_circuit()` raises `ValueError` for `backend='jax'` with `shots>0`.
@@ -52,7 +52,7 @@ conda run -n pennylane-gpu-jax-sep2026 python train.py --print-config
 - `QuantumTrainer._jax_train_step` is a single `jax.jit`-compiled Adam step, built once per trainer (not per call, so jit's compilation cache applies) and retraced at most twice per run (regular batch shape, smaller final partial batch).
 - `QuantumTrainer.current_weights` (read by validation, checkpointing, and final certification regardless of backend) is written back from the jax-native `jax_params` on every training call inside `iteration()` -- this sync is load-bearing; without it, training looks normal while validation/checkpoints/the certified model silently keep the untrained initial weights.
 - `run_experiments.py` sets `XLA_PYTHON_CLIENT_PREALLOCATE=false` in a jax-backend child's environment (JAX's default eager GPU memory preallocation can OOM a second concurrent jax subprocess on a shared GPU otherwise), and pins each child to one GPU via `--gpu-id`/`CUDA_VISIBLE_DEVICES` (see [Configuration behavior](#configuration-behavior)).
-- `jax[cuda12_local]` (the `requirements.txt` extra) assumes a system CUDA 12.x toolkit already on `LD_LIBRARY_PATH`; on a machine where pip's own CUDA wheels conflict with it, see `JAX_BACKEND_PLAN.md` ("What actually happened") for the manual `pip uninstall` fix -- this is machine-specific and not expressible in `requirements.txt` alone.
+- `jax[cuda12_local]` (the `requirements.txt` extra) assumes a system CUDA 12.x toolkit already on `LD_LIBRARY_PATH`; on a machine where pip's own CUDA wheels conflict with it (silent CPU fallback -- `jax.devices()` reports no `CudaDevice`), see the troubleshooting comment above `jax[cuda12_local]` in `requirements.txt` for the manual `pip uninstall` fix.
 - Not implemented: finite-shot (`shots>0`) execution under `backend='jax'`.
 
 ## Maintained source map
