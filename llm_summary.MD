@@ -250,6 +250,8 @@ Losses are averaged by sample count, so a smaller final batch receives the corre
 
 Each validation pass also logs a signal-vs-background classifier score histogram to Weights & Biases under the fixed key `score_distribution`, so the run page always shows only the latest epoch's distribution. For BCE runs the plotted values are `helpers.utils.sigmoid(score)` (probabilities), since BCE scores are logits; MSE runs plot the raw score. `evaluate.py`'s per-run `score_distribution.png` and the interactive site's per-run score-distribution chart apply the same conversion (AUC/ROC are unaffected, since sigmoid is monotonic).
 
+Each completed training epoch (`n_epoch > 0`) also appends one `epoch,seconds` row to `epoch_times.csv` in the run directory (gated by `save=true`, same as checkpoints) and logs `epoch_time_s` in the same per-epoch `wandb.log()` call as `val_loss`/`val_auc`. This is a standalone artifact independent of `self.history`/the checkpoint schema -- resume needs no special handling, since it only times epochs actually executed in the current process and appends to whatever CSV already exists. `publish_reports.py` surfaces it as `epoch_times.aggregate`/`epoch_times.runs` (identical shape to `validation`), rendered as a third individual/aggregate toggle chart in the interactive report; a missing `epoch_times.csv` (runs saved before this feature existed) is not reported as a notice.
+
 After `min_epochs` training epochs, insufficient recent validation AUC improvement multiplies the Adam step size by `decay_rate`. Training stops only when another insufficient-improvement check occurs after `decay_patience` reductions.
 
 A keyboard interrupt during the training loop writes `aborted_weights.pickle`, enters the normal cleanup block, and then exits unsuccessfully. It does not create a certified `trained_model.pickle`.
@@ -274,6 +276,7 @@ A saved run has this structure:
 ├── trained_model.pickle
 ├── history.pickle
 ├── history.png
+├── epoch_times.csv
 ├── logs.log
 ├── eval.log
 ├── wandb_run_id.txt
