@@ -413,6 +413,12 @@ class TestJaxFullTrainingLoop(unittest.TestCase):
             onp.testing.assert_allclose(
                 onp.array(final_checkpoint['weights'].rot), onp.array(trainer.current_weights.rot)
             )
+            with open(os.path.join(save_dir, 'compile_times.csv')) as stream:
+                compile_rows = {row['step']: float(row['seconds']) for row in csv.DictReader(stream)}
+            self.assertIn('train', compile_rows)
+            self.assertIn('val', compile_rows)
+            self.assertGreaterEqual(compile_rows['train'], 0.0)
+            self.assertGreaterEqual(compile_rows['val'], 0.0)
 
     def test_decay_after_minimum_epochs_then_early_stop(self) -> None:
         """Three failed post-warmup checks decay the injected optax learning rate
