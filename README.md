@@ -4,11 +4,11 @@
 
 ## Installation
 
-Create the project environment and install its dependencies:
+Create the project environment and install its dependencies. This targets the recommended, GPU-accelerated JAX backend; PennyLane Autograd (CPU-only, needed for finite-shot runs) works in the same environment:
 
 ```bash
-conda create -n pennylane-gpu-sep2026 python=3.10 -y
-conda activate pennylane-gpu-sep2026
+conda create -n pennylane-gpu-jax-sep2026 python=3.14 -y
+conda activate pennylane-gpu-jax-sep2026
 python -m pip install -r requirements.txt
 ```
 
@@ -47,10 +47,13 @@ python train.py \
   seed=run_001 \
   random_seed=42 \
   data_dir=/path/to/JetClass \
-  save_dir=/path/to/saved_models
+  save_dir=/path/to/saved_models \
+  backend=jax
 ```
 
 The run is saved under `<save_dir>/<seed>/<random_seed>/`. It contains the resolved `config.yaml`, a copy of the circuit source, epoch checkpoints, final weights, logs, history, and plots.
+
+`backend` defaults to `autograd` in `configs/base.yaml`; pass `backend=jax` as above for GPU training, or drop it for the CPU/autograd fallback (also the only option for `shots>0`).
 
 Launch repeated runs, each with a randomly generated seed, and bounded parallelism:
 
@@ -61,7 +64,8 @@ python run_experiments.py \
   --num-processes 4 \
   --gpu-id 0,1 \
   seed=experiment_001 \
-  data_dir=/path/to/JetClass
+  data_dir=/path/to/JetClass \
+  backend=jax
 ```
 
 This launches 10 runs, each with its own randomly generated `random_seed`, and keeps at most four one-thread training processes active. The launcher options are not training configuration fields and are not stored with individual models.
