@@ -90,7 +90,7 @@ class TestLoadConfig(unittest.TestCase):
                     validate_training_config(cfg)
 
     def test_launcher_options_are_rejected_in_training_config(self):
-        for key in ('number_of_runs', 'num_cores'):
+        for key in ('number_of_runs', 'num_processes'):
             with self.subTest(key=key):
                 cfg = self._run([f'{key}=2'])
                 with self.assertRaisesRegex(ValueError, 'launcher options'):
