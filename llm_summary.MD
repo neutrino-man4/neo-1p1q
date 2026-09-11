@@ -17,7 +17,7 @@ There is no active QAE, VPC, AOJ, probabilistic-output, or private Delphes workf
 
 ## Environment and common commands
 
-Use the Conda environment `pennylane-gpu-jax-sep2026` for repository work (recommended). It runs both backends: `backend: 'jax'` (GPU-accelerated, recommended) and `backend: 'autograd'` (CPU-only fallback, needed only for finite-shot runs) without switching environments -- verified by running the full test suite under it (all 89 tests pass, none skipped). The environment verified on 2026-09-11 contains Python 3.14.7, PennyLane 0.45.1, PennyLane-Lightning 0.45.0, `jax==0.10.2`, and `optax==0.2.8`. A separate `pennylane-gpu-sep2026` environment (same PennyLane/Lightning versions, no jax) also exists for autograd-only work; see [JAX backend (recommended)](#jax-backend-recommended) for why jax is pinned and what building this environment involves. The inherited shell may still report Conda `base`, so use `conda run` when there is any doubt:
+Use the Conda environment `pennylane-gpu-jax-sep2026` for repository work -- the one supported environment. It runs both backends: `backend: 'jax'` (GPU-accelerated, recommended) and `backend: 'autograd'` (CPU-only fallback, needed only for finite-shot runs) without switching environments -- verified by running the full test suite under it (all 89 tests pass, none skipped). The environment verified on 2026-09-11 contains Python 3.14.7, PennyLane 0.45.1, PennyLane-Lightning 0.45.0, `jax==0.10.2`, and `optax==0.2.8`; see [JAX backend (recommended)](#jax-backend-recommended) for why jax is pinned and what building this environment involves. The inherited shell may still report Conda `base`, so use `conda run` when there is any doubt:
 
 ```bash
 conda run -n pennylane-gpu-jax-sep2026 python --version
@@ -344,7 +344,7 @@ MPLCONFIGDIR=/tmp/matplotlib conda run -n pennylane-gpu-jax-sep2026 \
   python -m unittest discover -s tests -q
 ```
 
-The suite contained 89 tests at the last verification on 2026-09-11. Run under `pennylane-gpu-jax-sep2026`, all 89 pass (jax installed, so no jax tests are skipped). Run under the autograd-only `pennylane-gpu-sep2026`, 83 pass and 6 skip (jax-backend tests, guarded with `skipUnless(_HAS_JAX, ...)`). JetClass integration tests are separately guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist (true in this environment, so they run as part of the full suite).
+The suite contained 89 tests at the last verification on 2026-09-11, all passing under `pennylane-gpu-jax-sep2026` (jax installed, so no jax-backend tests are skipped; they are guarded with `skipUnless(_HAS_JAX, ...)` for environments without jax). JetClass integration tests are separately guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist (true in this environment, so they run as part of the full suite).
 
 | Test file | Coverage |
 | --- | --- |
