@@ -1,6 +1,6 @@
 # Repository guide for future agents
 
-This document describes the repository as it exists on 2026-09-10. Read either `AGENTS.md` or `.claude/CLAUDE.md` (this redirects back to `AGENTS.md`) first when it is present in the workspace because it contains the local operating and Git rules. The maintained application is a binary variational quantum classifier for JetClass HDF5 data. The supported entry points are `train.py`, `run_experiments.py`, and `evaluate.py`.
+This document describes the repository as it exists on 2026-09-11. Read either `AGENTS.md` or `.claude/CLAUDE.md` (this redirects back to `AGENTS.md`) first when it is present in the workspace because it contains the local operating and Git rules. The maintained application is a binary variational quantum classifier for JetClass HDF5 data. The supported entry points are `train.py`, `run_experiments.py`, and `evaluate.py`.
 
 ## Current scope
 
@@ -8,7 +8,7 @@ The active path supports one dataset format and one circuit family:
 
 - JetClass signal versus background classification.
 - The `normal` variational quantum classifier registered in `quantum/circuits/registry.py`.
-- PennyLane Autograd with Adam optimization.
+- PennyLane Autograd with Adam optimization (default), or an opt-in JAX/Optax backend (see [JAX backend (opt-in)](#jax-backend-opt-in)).
 - MSE or binary cross entropy with logits.
 - Training, epoch checkpoints, resumption, final model certification, and evaluation.
 - Reproducible random-seed runs and bounded parallel launch of repeated training.
@@ -17,7 +17,7 @@ There is no active QAE, VPC, AOJ, probabilistic-output, or private Delphes workf
 
 ## Environment and common commands
 
-Use the Conda environment `pennylane-gpu-sep2026` for repository work. The environment verified on 2026-09-10 contains Python 3.14.7, PennyLane 0.45.1, and PennyLane-Lightning 0.45.0. The inherited shell may still report Conda `base`, so use `conda run` when there is any doubt:
+Use the Conda environment `pennylane-gpu-sep2026` for repository work (default `backend: 'autograd'`). The environment verified on 2026-09-11 contains Python 3.14.7, PennyLane 0.45.1, and PennyLane-Lightning 0.45.0. `backend: 'jax'` requires the separate `pennylane-gpu-jax-sep2026` environment instead (Python 3.14.7, PennyLane 0.45.1, `jax==0.10.2`, `optax==0.2.8` -- see [JAX backend (opt-in)](#jax-backend-opt-in)). The inherited shell may still report Conda `base`, so use `conda run` when there is any doubt:
 
 ```bash
 conda run -n pennylane-gpu-sep2026 python --version
@@ -341,7 +341,7 @@ MPLCONFIGDIR=/tmp/matplotlib conda run -n pennylane-gpu-sep2026 \
   python -m unittest discover -s tests -q
 ```
 
-The suite contained 74 passing tests at the last verification on 2026-09-10. JetClass integration tests are guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist (true in this environment, so they now run as part of the full suite).
+The suite contained 89 tests at the last verification on 2026-09-11, run under `pennylane-gpu-sep2026`: 83 passed and 6 skipped (jax-backend tests, guarded with `skipUnless(_HAS_JAX, ...)` since this env has no `jax` install). Run the same suite under `pennylane-gpu-jax-sep2026` to also exercise those 6. JetClass integration tests are separately guarded with `skipUnless` and run only when `/ceph/abal/JetClass/test/TTBar_` and `/ceph/abal/JetClass/test/ZJetsToNuNu` exist (true in this environment, so they run as part of the full suite).
 
 | Test file | Coverage |
 | --- | --- |
