@@ -8,6 +8,7 @@ Date: 2026-09-10
 from __future__ import annotations
 
 import argparse
+import csv
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -70,6 +71,15 @@ def _validation_points(path: Path) -> list[dict[str, float | int]]:
         {"epoch": epoch, "auc": float(auc)}
         for epoch, auc in enumerate(aucs)
     ]
+
+
+def _epoch_time_points(path: Path) -> list[dict[str, float | int]]:
+    """Read one row per completed training epoch from its epoch-times CSV."""
+    with path.open(newline="", encoding="utf-8") as stream:
+        return [
+            {"epoch": int(row["epoch"]), "seconds": float(row["seconds"])}
+            for row in csv.DictReader(stream)
+        ]
 
 
 def _training_metadata(path: Path) -> tuple[int | None, str | None]:
@@ -234,6 +244,27 @@ def _aggregate_validation(
     ]
 
 
+def _aggregate_epoch_time(runs: list[dict[str, Any]]) -> list[dict[str, float | int]]:
+    """Average epoch times only across the epoch range shared by all runs."""
+    histories = [run["epoch_times"] for run in runs if run["epoch_times"]]
+    if not histories:
+        return []
+    common_length = min(len(history) for history in histories)
+    seconds = np.asarray([
+        [point["seconds"] for point in history[:common_length]]
+        for history in histories
+    ])
+    return [
+        {
+            "epoch": histories[0][index]["epoch"],
+            "mean": float(np.mean(seconds[:, index])),
+            "std": float(np.std(seconds[:, index])),
+            "n": len(histories),
+        }
+        for index in range(common_length)
+    ]
+
+
 def _aggregate_roc(runs: list[dict[str, Any]]) -> list[dict[str, float]]:
     """Average run ROC curves on the evaluation module's 1001-point grid."""
     curves = [run["roc_points"] for run in runs if run["roc_points"]]
@@ -278,6 +309,7 @@ def _run_report(run_dir: Path, result_dir: Path) -> tuple[dict[str, Any], dict[s
     roc_points: list[dict[str, float]] = []
     score_histogram: dict[str, list[float]] | None = None
     wandb_run_id = None
+    epoch_times: list[dict[str, float | int]] = []
 
     config_path = run_dir / "config.yaml"
     if config_path.is_file():
@@ -300,6 +332,15 @@ def _run_report(run_dir: Path, result_dir: Path) -> tuple[dict[str, Any], dict[s
             notices.append(_notice("Validation history is malformed."))
     else:
         notices.append(_notice("Missing validation history."))
+
+    epoch_times_path = run_dir / "epoch_times.csv"
+    if epoch_times_path.is_file():
+        try:
+            epoch_times = _epoch_time_points(epoch_times_path)
+        except Exception:
+            notices.append(_notice("Epoch timing data is malformed."))
+    # Missing epoch_times.csv is not reported: it's an optional artifact that
+    # runs saved before this feature existed will not have.
 
     model_path = run_dir / "trained_model.pickle"
     if model_path.is_file():
@@ -344,6 +385,7 @@ def _run_report(run_dir: Path, result_dir: Path) -> tuple[dict[str, Any], dict[s
         "validation_auc": validation_auc,
         "roc_points": roc_points,
         "score_histogram": score_histogram,
+        "epoch_times": epoch_times,
     }, cfg
 
 
@@ -406,6 +448,10 @@ def build_experiment(experiment_dir: Path, results_dir: Path) -> dict[str, Any]:
         {"random_seed": run["random_seed"], "points": run["validation_auc"]}
         for run in runs if run["validation_auc"]
     ]
+    epoch_time_runs = [
+        {"random_seed": run["random_seed"], "points": run["epoch_times"]}
+        for run in runs if run["epoch_times"]
+    ]
     roc_runs = [
         {
             "random_seed": run["random_seed"],
@@ -421,7 +467,7 @@ def build_experiment(experiment_dir: Path, results_dir: Path) -> dict[str, Any]:
     public_runs = [
         {
             key: value for key, value in run.items()
-            if key not in {"validation_auc", "roc_points", "score_histogram"}
+            if key not in {"validation_auc", "roc_points", "score_histogram", "epoch_times"}
         }
         for run in runs
     ]
@@ -448,6 +494,10 @@ def build_experiment(experiment_dir: Path, results_dir: Path) -> dict[str, Any]:
         "roc": {
             "aggregate": _aggregate_roc(successful_runs),
             "runs": roc_runs,
+        },
+        "epoch_times": {
+            "aggregate": _aggregate_epoch_time(runs),
+            "runs": epoch_time_runs,
         },
         "score_distribution": {
             "runs": score_distribution_runs,

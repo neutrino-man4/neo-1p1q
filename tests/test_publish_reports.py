@@ -5,6 +5,7 @@ Author: Aritra Bal (ETP)
 Date: 2026-09-10
 """
 
+import csv
 import json
 import stat
 from pathlib import Path
@@ -43,6 +44,7 @@ class TestReportPublication(unittest.TestCase):
         validation_aucs: list[float],
         scores: list[float],
         labels: list[int],
+        epoch_times: list[float] | None = None,
     ) -> None:
         run_dir = self.models / experiment / str(random_seed)
         result_dir = self.results / experiment / str(random_seed)
@@ -96,6 +98,12 @@ class TestReportPublication(unittest.TestCase):
                 },
             }, stream)
         (run_dir / "wandb_run_id.txt").write_text(f"run{random_seed}", encoding="utf-8")
+        if epoch_times is not None:
+            with (run_dir / "epoch_times.csv").open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(["epoch", "seconds"])
+                for epoch, seconds in enumerate(epoch_times, start=1):
+                    writer.writerow([epoch, seconds])
         with (result_dir / "test_results.pickle").open("wb") as stream:
             pickle.dump({
                 "scores": np.asarray(scores),
@@ -151,6 +159,40 @@ class TestReportPublication(unittest.TestCase):
             stat.S_IMODE((self.output / "data" / "index.json").stat().st_mode),
             0o644,
         )
+
+    def test_epoch_times_aggregate_and_individual_are_published(self) -> None:
+        self._write_run(
+            "004", 50, [0.5, 0.6, 0.7], [0.1, 0.9], [0, 1],
+            epoch_times=[10.0, 12.0, 14.0],
+        )
+        self._write_run(
+            "004", 51, [0.5, 0.6], [0.1, 0.9], [0, 1],
+            epoch_times=[8.0, 10.0],
+        )
+        # No epoch_times.csv for this run -- an old run predating the feature.
+        self._write_run("004", 52, [0.5, 0.6], [0.1, 0.9], [0, 1])
+
+        publish_reports.publish_reports(self.models, self.results, self.output, self.site)
+        detail = json.loads((self.output / "data" / "004.json").read_text())
+
+        aggregate = detail["epoch_times"]["aggregate"]
+        self.assertEqual([point["epoch"] for point in aggregate], [1, 2])
+        self.assertEqual([point["mean"] for point in aggregate], [9.0, 11.0])
+        for point in aggregate:
+            self.assertAlmostEqual(point["std"], 1.0)
+            self.assertEqual(point["n"], 2)
+
+        runs = {run["random_seed"]: run for run in detail["epoch_times"]["runs"]}
+        self.assertEqual(
+            runs[50]["points"],
+            [{"epoch": 1, "seconds": 10.0}, {"epoch": 2, "seconds": 12.0}, {"epoch": 3, "seconds": 14.0}],
+        )
+        self.assertNotIn(52, runs)
+
+        no_csv_run = next(run for run in detail["runs"] if run["random_seed"] == 52)
+        self.assertNotIn("epoch_times", no_csv_run)
+        messages = [notice["message"] for notice in detail["notices"]]
+        self.assertFalse(any("poch tim" in message for message in messages))
 
     def test_jax_backend_experiment_publishes_without_error(self) -> None:
         """publish_reports only reads config.yaml/results, never a checkpoint, so it

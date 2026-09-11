@@ -8,8 +8,8 @@
  *   data/index.json lists experiment summaries under `experiments`; each item
  *   has id, status, run_count, successful_runs, mean_auc, std_auc, total_jets,
  *   loss, device, and mode.
- *   data/<id>.json provides `summary`, `validation`, `roc`, `score_distribution`,
- *   `runs`, `config`, and `notices`. Missing values are displayed rather than
+ *   data/<id>.json provides `summary`, `validation`, `roc`, `epoch_times`,
+ *   `score_distribution`, `runs`, `config`, and `notices`. Missing values are displayed rather than
  *   inferred. `score_distribution.runs` is shown per seed only -- it has no
  *   aggregate view.
  */
@@ -150,6 +150,14 @@ function renderReport(data) {
       ${chartCard("Validation AUC by epoch", "validation-chart", "validation")}
     </section>
 
+    <section class="report-section" aria-labelledby="epoch-time-title">
+      <div class="section-heading">
+        <div><p class="eyebrow">Training</p><h2 id="epoch-time-title">Epoch time</h2></div>
+        <p>Wall-clock training time per epoch, in seconds. Error bars show one standard deviation across contributing runs.</p>
+      </div>
+      ${chartCard("Training time by epoch", "epoch-time-chart", "epoch_times")}
+    </section>
+
     <section class="report-section" aria-labelledby="roc-title">
       <div class="section-heading">
         <div><p class="eyebrow">Inference</p><h2 id="roc-title">ROC curve</h2></div>
@@ -182,8 +190,10 @@ function renderReport(data) {
     </section>`;
 
   renderValidationPlot(data.validation ?? {}, "aggregate");
+  renderEpochTimePlot(data.epoch_times ?? {}, "aggregate");
   renderRocPlot(data.roc ?? {}, "aggregate");
   setupChartToggle("validation", (mode) => renderValidationPlot(data.validation ?? {}, mode));
+  setupChartToggle("epoch_times", (mode) => renderEpochTimePlot(data.epoch_times ?? {}, mode));
   setupChartToggle("roc", (mode) => renderRocPlot(data.roc ?? {}, mode));
 
   const distributionRuns = sortedRuns(data.score_distribution?.runs);
@@ -269,6 +279,55 @@ function renderValidationPlot(validation, mode) {
     yaxis: { title: "Validation AUC", range: [0, 1] },
     showlegend: mode === "individual",
   }, "No validation history is available for this experiment.");
+}
+
+function renderEpochTimePlot(epochTimes, mode) {
+  const target = document.querySelector("#epoch-time-chart");
+  if (!window.Plotly) {
+    renderChartError(target, "Plotly could not be loaded.");
+    return;
+  }
+
+  let traces = [];
+  if (mode === "individual") {
+    const runs = sortedRuns(epochTimes.runs);
+    traces = runs.map((run, index) => ({
+      x: (run.points ?? []).map((point) => point.epoch),
+      y: (run.points ?? []).map((point) => point.seconds),
+      type: "scatter",
+      mode: "lines+markers",
+      name: `Seed ${run.random_seed}`,
+      line: { color: runColor(run.random_seed, index), width: 2 },
+      marker: { size: 5 },
+      hovertemplate: `Seed ${safeText(run.random_seed)}<br>Epoch %{x}<br>Time %{y:.2f}s<extra></extra>`,
+    })).filter((trace) => trace.x.length);
+  } else {
+    const points = Array.isArray(epochTimes.aggregate) ? epochTimes.aggregate : [];
+    traces = points.length ? [{
+      x: points.map((point) => point.epoch),
+      y: points.map((point) => point.mean),
+      customdata: points.map((point) => [point.std, point.n]),
+      error_y: {
+        type: "data",
+        array: points.map((point) => point.std),
+        color: "rgba(127,219,149,0.55)",
+        thickness: 1.2,
+        width: 3,
+        visible: true,
+      },
+      type: "scatter",
+      mode: "lines+markers",
+      name: "Mean epoch time",
+      line: { color: "#7fdb95", width: 3 },
+      marker: { color: "#7fdb95", size: 7 },
+      hovertemplate: "Epoch %{x}<br>Mean time %{y:.2f}s<br>Std. dev. %{customdata[0]:.2f}s<br>%{customdata[1]} contributing runs<extra></extra>",
+    }] : [];
+  }
+  drawPlot(target, traces, {
+    xaxis: { title: "Epoch", rangemode: "tozero", dtick: 1 },
+    yaxis: { title: "Time (s)", rangemode: "tozero" },
+    showlegend: mode === "individual",
+  }, "No epoch timing data is available for this experiment.");
 }
 
 function renderRocPlot(roc, mode) {
