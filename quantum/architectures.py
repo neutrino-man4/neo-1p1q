@@ -520,6 +520,11 @@ class QuantumTrainer:
         self.jax_opt_state: Optional[Any] = None
         self._jax_train_step: Optional[Callable] = None
         self._jax_val_step: Optional[Callable] = None
+        # Set once, on the first jax train/val call, by explicitly timing
+        # jax.jit's AOT .lower().compile() step separately from execution --
+        # see run_training_loop's compile_times.csv write.
+        self._train_compile_seconds: Optional[float] = None
+        self._val_compile_seconds: Optional[float] = None
         if self.backend == 'jax' and self.current_weights is not None:
             self.jax_params = to_jax_pytree(self.current_weights)
             self.jax_opt_state = self.optim.init(self.jax_params)
@@ -556,9 +561,19 @@ class QuantumTrainer:
             Training loss (if train=True) or tuple of (validation loss, scores)
         """
         if train and self.backend == 'jax':
-            self.jax_params, self.jax_opt_state, cost = self._jax_train_step(
-                self.jax_params, self.jax_opt_state, data, labels
-            )
+            if self._train_compile_seconds is None:
+                compile_start = time.time()
+                compiled_train_step = self._jax_train_step.lower(
+                    self.jax_params, self.jax_opt_state, data, labels
+                ).compile()
+                self._train_compile_seconds = round(time.time() - compile_start, 2)
+                self.jax_params, self.jax_opt_state, cost = compiled_train_step(
+                    self.jax_params, self.jax_opt_state, data, labels
+                )
+            else:
+                self.jax_params, self.jax_opt_state, cost = self._jax_train_step(
+                    self.jax_params, self.jax_opt_state, data, labels
+                )
             # self.current_weights must stay in sync on every call: validation,
             # save_checkpoint(), and train.py's final save_trained_run() all read
             # it directly and have no reason to know a jax branch exists.
@@ -589,7 +604,15 @@ class QuantumTrainer:
             self.current_weights = CircuitWeights(rot=new_rot, aux=dict(zip(aux_keys, new_aux_values)))
             return float(cost)
         if self.backend == 'jax':
-            cost, scores = self._jax_val_step(self.jax_params, data, labels)
+            if self._val_compile_seconds is None:
+                compile_start = time.time()
+                compiled_val_step = self._jax_val_step.lower(
+                    self.jax_params, data, labels
+                ).compile()
+                self._val_compile_seconds = round(time.time() - compile_start, 2)
+                cost, scores = compiled_val_step(self.jax_params, data, labels)
+            else:
+                cost, scores = self._jax_val_step(self.jax_params, data, labels)
         else:
             cost, scores = self.quantum_loss(
                 self.current_weights,
@@ -815,7 +838,17 @@ class QuantumTrainer:
         
         if not complete:
             ut.Pickle(self.history, 'history.pickle', path=self.save_dir)
-        
+
+        if self.saving and (self._train_compile_seconds is not None or self._val_compile_seconds is not None):
+            compile_times_path = os.path.join(self.save_dir, 'compile_times.csv')
+            with open(compile_times_path, 'w', newline='') as stream:
+                writer = csv.writer(stream)
+                writer.writerow(['step', 'seconds'])
+                if self._train_compile_seconds is not None:
+                    writer.writerow(['train', self._train_compile_seconds])
+                if self._val_compile_seconds is not None:
+                    writer.writerow(['val', self._val_compile_seconds])
+
         return self.history
     
     def print_params(self, prefix: Optional[str] = None) -> None:
