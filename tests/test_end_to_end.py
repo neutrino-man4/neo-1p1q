@@ -5,6 +5,7 @@ Includes regression tests for the training, validation, and inference paths.
 Author: Aritra Bal (ETP)
 Date: 2026-09-10
 """
+import csv
 import os
 from pathlib import Path
 import pickle
@@ -249,6 +250,13 @@ class TestFullTrainingLoop(unittest.TestCase):
                 sorted(os.listdir(checkpoint_dir)),
                 ['ep0000.pickle', 'ep0001.pickle', 'ep0002.pickle'],
             )
+
+            with open(os.path.join(save_dir, 'epoch_times.csv')) as stream:
+                rows = list(csv.reader(stream))
+            self.assertEqual(rows[0], ['epoch', 'seconds'])
+            self.assertEqual([row[0] for row in rows[1:]], ['1', '2'])
+            for row in rows[1:]:
+                self.assertGreaterEqual(float(row[1]), 0.0)
 
     def test_decay_after_minimum_epochs_then_early_stop(self) -> None:
         """Three failed post-warmup checks decay Adam before stopping training."""

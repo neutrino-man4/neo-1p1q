@@ -7,6 +7,7 @@ Date: 2026-09-10
 
 # pylint: disable=maybe-no-member
 from itertools import combinations
+import csv
 import os
 import pathlib
 import pickle
@@ -610,6 +611,7 @@ class QuantumTrainer:
             batch_yield = 0
             self.current_epoch = n_epoch
             losses = 0.0
+            epoch_time = None
             
             # Allow the configured minimum training period before decay or stopping.
             if n_epoch > self.min_epochs and len(self.history['auc']) >= 3:
@@ -670,6 +672,15 @@ class QuantumTrainer:
 
                 end = round(time.time(), 2)
                 train_loss = losses / sample_counter
+                epoch_time = round(end - start, 2)
+                if self.saving:
+                    epoch_times_path = os.path.join(self.save_dir, 'epoch_times.csv')
+                    write_header = not os.path.exists(epoch_times_path)
+                    with open(epoch_times_path, 'a', newline='') as stream:
+                        writer = csv.writer(stream)
+                        if write_header:
+                            writer.writerow(['epoch', 'seconds'])
+                        writer.writerow([n_epoch, epoch_time])
                 self.print_params('Current weights: \n\n')
 
             # Validation phase
@@ -720,11 +731,14 @@ class QuantumTrainer:
                 ax.set_xlabel('Predicted probability' if is_logits else 'Classifier score', size=16)
                 ax.set_ylabel('Density', size=16)
                 ax.legend(prop={'size': 14})
-                self.wandb.log({
+                wandb_metrics = {
                     'val_loss': val_loss,
                     'val_auc': val_auc,
                     'score_distribution': self.wandb.Image(fig),
-                })
+                }
+                if epoch_time is not None:
+                    wandb_metrics['epoch_time_s'] = epoch_time
+                self.wandb.log(wandb_metrics)
                 plt.close(fig)
             
             # Logging

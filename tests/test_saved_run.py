@@ -288,6 +288,9 @@ class TestSavedRun(unittest.TestCase):
             results = pickle.load(stream)
         self.assertEqual(len(results['scores']), 3)
         self.assertTrue(np.isfinite(results['auc']))
+        self.assertTrue((self.root / 'entrypoint' / '42' / 'epoch_times.csv').is_file())
+        logged_keys = [call.args[0].keys() for call in wandb.log.call_args_list]
+        self.assertTrue(any('epoch_time_s' in keys for keys in logged_keys))
 
     def test_new_training_requires_seed_and_claims_its_directory(self) -> None:
         import train
