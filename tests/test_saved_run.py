@@ -6,6 +6,7 @@ Date: 2026-09-10
 """
 
 import contextlib
+import csv
 import io
 import os
 from pathlib import Path
@@ -291,6 +292,14 @@ class TestSavedRun(unittest.TestCase):
         self.assertTrue((self.root / 'entrypoint' / '42' / 'epoch_times.csv').is_file())
         logged_keys = [call.args[0].keys() for call in wandb.log.call_args_list]
         self.assertTrue(any('epoch_time_s' in keys for keys in logged_keys))
+        compile_times_path = self.root / 'entrypoint' / '42' / 'compile_times.csv'
+        self.assertTrue(compile_times_path.is_file())
+        with compile_times_path.open(newline='', encoding='utf-8') as stream:
+            compile_rows = {row['step']: float(row['seconds']) for row in csv.DictReader(stream)}
+        self.assertIn('train', compile_rows)
+        self.assertIn('val', compile_rows)
+        self.assertGreaterEqual(compile_rows['train'], 0.0)
+        self.assertGreaterEqual(compile_rows['val'], 0.0)
 
     def test_new_training_requires_seed_and_claims_its_directory(self) -> None:
         import train
