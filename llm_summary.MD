@@ -24,7 +24,7 @@ There is no active QAE, VPC, AOJ, probabilistic-output, or private Delphes workf
 
 ## Environment and common commands
 
-Use the Conda environment `pennylane-gpu-jax-sep2026` for repository work -- the one supported environment. It runs both backends: `backend: 'jax'` (GPU-accelerated, recommended) and `backend: 'autograd'` (CPU-only fallback, needed only for finite-shot runs) without switching environments -- verified by running the full test suite under it (all 89 tests pass, none skipped). The environment verified on 2026-09-11 contains Python 3.14.7, PennyLane 0.45.1, PennyLane-Lightning 0.45.0, `jax==0.10.2`, and `optax==0.2.8`; see [JAX backend (recommended)](#jax-backend-recommended) for why jax is pinned and what building this environment involves. The inherited shell may still report Conda `base`, so use `conda run` when there is any doubt:
+Use the Conda environment `pennylane-gpu-jax-sep2026` for repository work -- the one supported environment. It runs both backends: `backend: 'jax'` (GPU-accelerated, recommended) and `backend: 'autograd'` (CPU-only fallback, needed only for finite-shot runs) without switching environments (see [Tests](#tests) for verification). The environment verified on 2026-09-11 contains Python 3.14.7, PennyLane 0.45.1, PennyLane-Lightning 0.45.0, `jax==0.10.2`, and `optax==0.2.8`; see [JAX backend (recommended)](#jax-backend-recommended) for why jax is pinned and what building this environment involves. The inherited shell may still report Conda `base`, so use `conda run` when there is any doubt:
 
 ```bash
 conda run -n pennylane-gpu-jax-sep2026 python --version
@@ -50,7 +50,7 @@ conda run -n pennylane-gpu-jax-sep2026 python train.py --print-config
 
 ## JAX backend (recommended)
 
-`backend: 'jax'` is a PennyLane QNode `interface` value, GPU-accelerated via `jax.jit` and `optax.adam`; it is `configs/base.yaml`'s default and the recommended backend for new runs on GPU hardware. `backend: 'autograd'` is the CPU fallback and is required whenever finite-shot execution (`shots>0`) is needed, since jax has no finite-shot path.
+`backend: 'jax'` is a PennyLane QNode `interface` value, GPU-accelerated via `jax.jit` and `optax.adam` (default per [Current scope](#current-scope)). `backend: 'autograd'` is the CPU fallback, required whenever finite-shot execution (`shots>0`) is needed, since jax has no finite-shot path.
 
 - `jax==0.10.2` is pinned in `requirements.txt` -- PennyLane 0.45.1's jax interface depends on a `jax.core` API removed in JAX 0.11; a later `jax` silently breaks `adjoint`/`parameter-shift`/`jax.jit` while plain `backprop` still appears to work.
 - Analytic execution only (`shots<=0`); `set_circuit()` raises `ValueError` for `backend='jax'` with `shots>0`.
@@ -58,7 +58,7 @@ conda run -n pennylane-gpu-jax-sep2026 python train.py --print-config
 - Training uses `optax.inject_hyperparams(optax.adam)` instead of `qml.AdamOptimizer`, with its own checkpoint schema (`optimizer.name == 'optax_adam'`, `optimizer.opt_state` numpy-converted for portable pickling) validated by a separate function in `helpers/trained_run.py`. Learning-rate decay mutates `opt_state`'s injected `learning_rate` field directly (no optimizer reconstruction, no jit recompile).
 - `QuantumTrainer._jax_train_step` is a single `jax.jit`-compiled Adam step, built once per trainer (not per call, so jit's compilation cache applies) and retraced at most twice per run (regular batch shape, smaller final partial batch).
 - `QuantumTrainer.current_weights` (read by validation, checkpointing, and final certification regardless of backend) is written back from the jax-native `jax_params` on every training call inside `iteration()` -- this sync is load-bearing; without it, training looks normal while validation/checkpoints/the certified model silently keep the untrained initial weights.
-- `run_experiments.py` sets `XLA_PYTHON_CLIENT_PREALLOCATE=false` in a jax-backend child's environment (JAX's default eager GPU memory preallocation can OOM a second concurrent jax subprocess on a shared GPU otherwise), and pins each child to one GPU via `--gpu-id`/`CUDA_VISIBLE_DEVICES` (see [Configuration behavior](#configuration-behavior)).
+- `run_experiments.py` and `evaluate.py` disable GPU memory preallocation and pin each jax-backend child to one GPU (see [Configuration behavior](#configuration-behavior) for the mechanism and rationale).
 - `jax[cuda12_local]` (the `requirements.txt` extra) assumes a system CUDA 12.x toolkit already on `LD_LIBRARY_PATH`; on a machine where pip's own CUDA wheels conflict with it (silent CPU fallback -- `jax.devices()` reports no `CudaDevice`), see the troubleshooting comment above `jax[cuda12_local]` in `requirements.txt` for the manual `pip uninstall` fix.
 - Not implemented: finite-shot (`shots>0`) execution under `backend='jax'`.
 
@@ -197,6 +197,21 @@ validation AUC and ROC curves, and per-run classifier score distributions (a 30-
 signal/background density histogram, shown per seed only -- there is no aggregate view), but
 excludes raw event scores, labels, and local filesystem paths. The frontend (`report_site/assets/`)
 uses a dark theme by default (`color-scheme: dark`, no light/dark toggle).
+
+## Submitting experiments as a detached pipeline
+
+When an experiment must survive the current shell/session ending, write one standalone script chaining `run_experiments.py && evaluate.py --experiment-dir ... && publish_reports.py` with absolute paths (so it can be re-run independently later), then launch it detached:
+
+```bash
+setsid nohup bash <save_dir>/<seed>/run_command.sh </dev/null > <save_dir>/<seed>/pipeline.log 2>&1 &
+disown
+```
+
+Three verified pitfalls:
+
+- **`$!` does not capture the long-lived PID.** `setsid`'s own process exits immediately once it hands the child to the new session, so `$!` captures that transient PID, not `bash run_command.sh`. Find the real PID with `pgrep -f "bash <path to run_command.sh>"` and write that to `pipeline.pid`.
+- **`seed=001` on the CLI silently becomes the integer `1`.** OmegaConf infers dotlist value types from the raw string and drops the leading zero. Passing the literal string form -- the argv token `seed='001'` (write `seed=\'001\'` in a bash script so the shell delivers those quote characters) -- makes OmegaConf parse it as the string `'001'` instead.
+- **`publish_reports.py --results-dir` must equal the `dump` path used for training/evaluation.** `evaluate.py` writes `test_results.pickle` under `<dump>/<seed>/<random_seed>/`; `publish_reports.py` looks under `<results-dir>/<experiment_id>`. A `dump` override not mirrored in `--results-dir` makes the report step silently find no evaluation results for that experiment.
 
 ## Circuit and score construction
 
