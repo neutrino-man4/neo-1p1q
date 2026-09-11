@@ -26,7 +26,7 @@ conda run -n pennylane-gpu-jax-sep2026 python -m unittest discover -s tests -q
 
 `requirements.txt` pins the exact versions needed to reproduce `pennylane-gpu-jax-sep2026` (jax is sensitive to version drift; see below) and is the recommended way to build a new environment. The default simulator is `default.qubit` with `diff_method: 'backprop'` (both configurable in `configs/base.yaml`; see below and `configs/README.md`). `QuantumClassifier.set_circuit()`'s `diff_method` argument is validated at QNode construction time -- an incompatible device/diff_method/shots combination (e.g. `backprop` with `lightning.qubit` or with finite shots) raises a `ValueError` naming the conflict and suggesting `parameter-shift`, instead of PennyLane's raw traceback. `QuantumClassifier.from_config()` falls back to PennyLane's own default (`'best'`) when a saved config predates the `diff_method` field, reproducing historical behaviour for old runs rather than forcing `backprop` on them.
 
-Training initializes Weights & Biases even when no online account is wanted. Set offline mode for local work:
+Training initializes Weights & Biases even when no online account is wanted. `train.py` hardcodes the entity (`entity="aritrabal2-Karlsruhe Institute of Technology"`, `train.py:86`) and project (`"neo1P1Q"`) in its `wandb.init()` call -- these are not config fields, so a different user must edit that line directly to log to their own account. Set offline mode for local work:
 
 ```bash
 WANDB_MODE=offline conda run -n pennylane-gpu-jax-sep2026 \
@@ -181,6 +181,8 @@ Publish every numeric experiment as a static interactive report with:
 python publish_reports.py --models-dir saved_models --results-dir results \
   --output-dir /path/to/public/interactive/1P1Q
 ```
+
+In this environment, the published site lives at `/web/abal/public_html/interactive/1P1Q/` (part of the current user's personal KIT homepage) -- `--output-dir` is a CLI argument, not a config field, so a different user supplies their own path.
 
 The publisher copies the frontend in `report_site/`, writes one JSON document per experiment,
 and replaces the experiment index last. Published data includes aggregate and individual
